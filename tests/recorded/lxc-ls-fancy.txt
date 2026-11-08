@@ -1,0 +1,3 @@
+NAME     STATE   AUTOSTART GROUPS IPV4                   IPV6 UNPRIVILEGED 
+buildbox RUNNING 1         -      10.0.3.114, 172.17.0.1 -    false        
+legacy   STOPPED 0         -      -                      -    false        

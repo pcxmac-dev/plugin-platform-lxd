@@ -1,0 +1,204 @@
+[
+ {
+  "architecture": "x86_64",
+  "config": {
+   "image.architecture": "amd64",
+   "image.description": "Debian bookworm amd64 (20240512_05:24)",
+   "image.os": "Debian",
+   "image.release": "bookworm",
+   "image.serial": "20240512_05:24",
+   "image.type": "squashfs",
+   "image.variant": "default",
+   "volatile.base_image": "8c4c1e1f0a2b6d3e9f7a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e",
+   "volatile.cloud-init.instance-id": "1b7c6f4e-9d2a-4a5e-8c3b-2f1e0d9c8b7a",
+   "volatile.eth0.host_name": "veth2d7a8c1f",
+   "volatile.eth0.hwaddr": "00:16:3e:5a:1f:3c",
+   "volatile.last_state.power": "RUNNING",
+   "volatile.uuid": "4e3d2c1b-0a9f-4e8d-9c7b-6a5f4e3d2c1b"
+  },
+  "devices": {},
+  "ephemeral": false,
+  "profiles": ["default"],
+  "stateful": false,
+  "description": "nginx in front of the apps",
+  "created_at": "2024-05-12T09:10:55.801217637Z",
+  "expanded_config": {"image.os": "Debian", "image.release": "bookworm"},
+  "expanded_devices": {
+   "eth0": {"name": "eth0", "network": "incusbr0", "type": "nic"},
+   "root": {"path": "/", "pool": "default", "type": "disk"}
+  },
+  "name": "web",
+  "status": "Running",
+  "status_code": 103,
+  "last_used_at": "2024-11-08T07:42:10.114375391Z",
+  "location": "none",
+  "type": "container",
+  "project": "default",
+  "backups": null,
+  "state": {
+   "status": "Running",
+   "status_code": 103,
+   "disk": {"root": {"usage": 523788288, "total": 0}},
+   "memory": {"usage": 87543808, "usage_peak": 0, "total": 0, "swap_usage": 0, "swap_usage_peak": 0},
+   "network": {
+    "eth0": {
+     "addresses": [
+      {"family": "inet", "address": "10.120.17.23", "netmask": "24", "scope": "global"},
+      {"family": "inet6", "address": "fd42:7c1a:9b2e:51e1:216:3eff:fe5a:1f3c", "netmask": "64", "scope": "global"},
+      {"family": "inet6", "address": "fe80::216:3eff:fe5a:1f3c", "netmask": "64", "scope": "link"}
+     ],
+     "counters": {"bytes_received": 18734512, "bytes_sent": 2299123, "packets_received": 13021, "packets_sent": 9930,
+                  "errors_received": 0, "errors_sent": 0, "packets_dropped_outbound": 0, "packets_dropped_inbound": 0},
+     "hwaddr": "00:16:3e:5a:1f:3c",
+     "host_name": "veth2d7a8c1f",
+     "mtu": 1500,
+     "state": "up",
+     "type": "broadcast"
+    },
+    "lo": {
+     "addresses": [
+      {"family": "inet", "address": "127.0.0.1", "netmask": "8", "scope": "local"},
+      {"family": "inet6", "address": "::1", "netmask": "128", "scope": "local"}
+     ],
+     "counters": {"bytes_received": 0, "bytes_sent": 0, "packets_received": 0, "packets_sent": 0,
+                  "errors_received": 0, "errors_sent": 0, "packets_dropped_outbound": 0, "packets_dropped_inbound": 0},
+     "hwaddr": "",
+     "host_name": "",
+     "mtu": 65536,
+     "state": "up",
+     "type": "loopback"
+    }
+   },
+   "pid": 2841,
+   "processes": 23,
+   "cpu": {"usage": 18822930000}
+  },
+  "snapshots": [
+   {
+    "architecture": "x86_64",
+    "config": {"image.os": "Debian"},
+    "created_at": "2024-05-12T09:14:03.123456789Z",
+    "description": "",
+    "devices": {},
+    "ephemeral": false,
+    "expanded_config": {"image.os": "Debian"},
+    "expanded_devices": {},
+    "last_used_at": "0001-01-01T00:00:00Z",
+    "name": "snap0",
+    "profiles": ["default"],
+    "stateful": false,
+    "size": 1323008,
+    "expires_at": "0001-01-01T00:00:00Z"
+   },
+   {
+    "architecture": "x86_64",
+    "config": {"image.os": "Debian"},
+    "created_at": "2024-06-01T18:02:11.552100378Z",
+    "description": "",
+    "devices": {},
+    "ephemeral": false,
+    "last_used_at": "0001-01-01T00:00:00Z",
+    "name": "before-upgrade",
+    "profiles": ["default"],
+    "stateful": false,
+    "size": 48230400,
+    "expires_at": "2024-07-01T18:02:11.552100378Z"
+   }
+  ]
+ },
+ {
+  "architecture": "x86_64",
+  "config": {
+   "image.architecture": "amd64",
+   "image.description": "Ubuntu noble amd64 (20240510_07:42)",
+   "image.os": "Ubuntu",
+   "image.release": "noble",
+   "limits.cpu": "4",
+   "limits.memory": "8GiB",
+   "volatile.uuid": "0f9e8d7c-6b5a-4f3e-9d2c-1b0a9f8e7d6c"
+  },
+  "devices": {},
+  "ephemeral": false,
+  "profiles": ["default", "vm-large"],
+  "stateful": false,
+  "description": "",
+  "created_at": "2024-05-20T16:31:07.402851120Z",
+  "expanded_config": {"limits.cpu": "4", "limits.memory": "8GiB"},
+  "expanded_devices": {"root": {"path": "/", "pool": "default", "size": "40GiB", "type": "disk"}},
+  "name": "db",
+  "status": "Stopped",
+  "status_code": 102,
+  "last_used_at": "2024-11-01T20:12:44.009172310Z",
+  "location": "none",
+  "type": "virtual-machine",
+  "project": "default",
+  "backups": null,
+  "state": {
+   "status": "Stopped",
+   "status_code": 102,
+   "disk": null,
+   "memory": {"usage": 0, "usage_peak": 0, "total": 0, "swap_usage": 0, "swap_usage_peak": 0},
+   "network": null,
+   "pid": 0,
+   "processes": 0,
+   "cpu": {"usage": 0}
+  },
+  "snapshots": null
+ },
+ {
+  "architecture": "x86_64",
+  "config": {"image.description": "Alpine 3.20 amd64 (20240511_13:00)", "image.os": "Alpine", "image.release": "3.20"},
+  "devices": {},
+  "ephemeral": false,
+  "profiles": ["default"],
+  "stateful": false,
+  "description": "",
+  "created_at": "2023-12-02T10:00:01.000000001Z",
+  "expanded_config": {},
+  "expanded_devices": {},
+  "name": "old-test",
+  "status": "Stopped",
+  "status_code": 102,
+  "last_used_at": "2024-01-15T08:00:00.000000000Z",
+  "location": "none",
+  "type": "container",
+  "project": "default",
+  "backups": null,
+  "state": null,
+  "snapshots": []
+ },
+ {
+  "architecture": "x86_64",
+  "config": {"image.os": "Debian", "image.release": "bookworm"},
+  "devices": {},
+  "ephemeral": false,
+  "profiles": ["default", "ci"],
+  "stateful": false,
+  "description": "GitLab runner",
+  "created_at": "2024-08-02T12:00:00.000000000Z",
+  "expanded_config": {},
+  "expanded_devices": {},
+  "name": "ci-runner",
+  "status": "Running",
+  "status_code": 103,
+  "last_used_at": "2024-11-08T06:00:00.000000000Z",
+  "location": "none",
+  "type": "container",
+  "project": "dev",
+  "backups": null,
+  "state": {
+   "status": "Running",
+   "status_code": 103,
+   "network": {
+    "eth0": {"addresses": [{"family": "inet", "address": "10.120.17.88", "netmask": "24", "scope": "global"}],
+             "hwaddr": "00:16:3e:11:22:33", "host_name": "veth11c2a3b4", "mtu": 1500, "state": "up", "type": "broadcast"},
+    "docker0": {"addresses": [{"family": "inet", "address": "172.17.0.1", "netmask": "16", "scope": "global"}],
+                "hwaddr": "02:42:ac:11:00:01", "host_name": "", "mtu": 1500, "state": "down", "type": "broadcast"}
+   },
+   "pid": 3310,
+   "processes": 41,
+   "cpu": {"usage": 9922000000}
+  },
+  "snapshots": []
+ }
+]

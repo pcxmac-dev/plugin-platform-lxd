@@ -1,0 +1,43 @@
+[
+ {
+  "architecture": "x86_64",
+  "config": {"image.architecture": "amd64", "image.description": "ubuntu 24.04 LTS amd64 (release) (20241004)",
+             "image.label": "release", "image.os": "ubuntu", "image.release": "noble", "image.version": "24.04",
+             "volatile.eth0.hwaddr": "00:16:3e:9b:44:01"},
+  "devices": {},
+  "ephemeral": false,
+  "profiles": ["default"],
+  "stateful": false,
+  "description": "",
+  "created_at": "2024-10-06T11:20:31.514103875Z",
+  "expanded_config": {},
+  "expanded_devices": {"eth0": {"name": "eth0", "network": "lxdbr0", "type": "nic"}, "root": {"path": "/", "pool": "default", "type": "disk"}},
+  "name": "noble",
+  "status": "Running",
+  "status_code": 103,
+  "last_used_at": "2024-11-08T07:00:02.000000000Z",
+  "location": "none",
+  "type": "container",
+  "project": "default",
+  "backups": null,
+  "state": {
+   "status": "Running",
+   "status_code": 103,
+   "network": {
+    "eth0": {"addresses": [{"family": "inet", "address": "10.33.41.12", "netmask": "24", "scope": "global"},
+                           {"family": "inet6", "address": "fe80::216:3eff:fe9b:4401", "netmask": "64", "scope": "link"}],
+             "hwaddr": "00:16:3e:9b:44:01", "host_name": "veth5c1e2d33", "mtu": 1500, "state": "up", "type": "broadcast"},
+    "lo": {"addresses": [{"family": "inet", "address": "127.0.0.1", "netmask": "8", "scope": "local"}],
+           "hwaddr": "", "host_name": "", "mtu": 65536, "state": "up", "type": "loopback"}
+   },
+   "pid": 1934,
+   "processes": 31,
+   "cpu": {"usage": 4410000000}
+  },
+  "snapshots": [
+   {"architecture": "x86_64", "config": {}, "created_at": "2024-10-06T11:40:00.000000000Z", "description": "", "devices": {},
+    "ephemeral": false, "last_used_at": "0001-01-01T00:00:00Z", "name": "snap0", "profiles": ["default"], "stateful": false,
+    "size": 2048000, "expires_at": "0001-01-01T00:00:00Z"}
+  ]
+ }
+]

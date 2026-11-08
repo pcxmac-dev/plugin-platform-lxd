@@ -1,0 +1,16 @@
+[
+ {
+  "config": {"ipv4.address": "10.120.17.1/24", "ipv4.nat": "true", "ipv6.address": "fd42:7c1a:9b2e:51e1::1/64", "ipv6.nat": "true"},
+  "description": "",
+  "name": "incusbr0",
+  "type": "bridge",
+  "used_by": ["/1.0/profiles/default", "/1.0/instances/web", "/1.0/instances/ci-runner?project=dev"],
+  "managed": true,
+  "status": "Created",
+  "locations": ["none"],
+  "project": "default"
+ },
+ {"config": {}, "description": "", "name": "docker0", "type": "bridge", "used_by": [], "managed": false, "status": "", "locations": null, "project": "default"},
+ {"config": {}, "description": "", "name": "enp3s0", "type": "physical", "used_by": [], "managed": false, "status": "", "locations": null, "project": "default"},
+ {"config": {}, "description": "", "name": "lo", "type": "loopback", "used_by": [], "managed": false, "status": "", "locations": null, "project": "default"}
+]

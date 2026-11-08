@@ -1,0 +1,42 @@
+[
+ {
+  "aliases": [{"name": "debian/12", "description": ""}],
+  "architecture": "x86_64",
+  "auto_update": true,
+  "cached": true,
+  "fingerprint": "8c4c1e1f0a2b6d3e9f7a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e",
+  "filename": "incus.tar.xz",
+  "properties": {"architecture": "amd64", "description": "Debian bookworm amd64 (20240512_05:24)", "os": "Debian",
+                 "release": "bookworm", "serial": "20240512_05:24", "type": "squashfs", "variant": "default"},
+  "public": false,
+  "expires_at": "2024-06-11T09:10:41Z",
+  "profiles": ["default"],
+  "size": 96734208,
+  "type": "container",
+  "created_at": "2024-05-12T00:00:00Z",
+  "last_used_at": "2024-05-12T09:10:55.801217637Z",
+  "uploaded_at": "2024-05-12T09:10:41.384919622Z",
+  "update_source": {"alias": "debian/12", "certificate": "", "protocol": "simplestreams",
+                    "server": "https://images.linuxcontainers.org", "image_type": "container"},
+  "project": "default"
+ },
+ {
+  "aliases": [],
+  "architecture": "x86_64",
+  "auto_update": true,
+  "cached": true,
+  "fingerprint": "3f1e9c7d5b3a1f0e8d6c4b2a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e",
+  "filename": "incus.tar.xz",
+  "properties": {"architecture": "amd64", "description": "Ubuntu noble amd64 (20240510_07:42)", "os": "Ubuntu",
+                 "release": "noble", "type": "disk-kvm.img", "variant": "cloud"},
+  "public": false,
+  "expires_at": "2024-06-19T16:30:12Z",
+  "profiles": ["default"],
+  "size": 312475648,
+  "type": "virtual-machine",
+  "created_at": "2024-05-10T00:00:00Z",
+  "last_used_at": "2024-05-20T16:31:07.402851120Z",
+  "uploaded_at": "2024-05-20T16:30:12.778120004Z",
+  "project": "default"
+ }
+]

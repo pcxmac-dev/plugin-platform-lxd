@@ -1,0 +1,21 @@
+[
+ {
+  "config": {},
+  "description": "Default Incus profile",
+  "devices": {
+   "eth0": {"name": "eth0", "network": "incusbr0", "type": "nic"},
+   "root": {"path": "/", "pool": "default", "type": "disk"}
+  },
+  "name": "default",
+  "used_by": ["/1.0/instances/web", "/1.0/instances/db", "/1.0/instances/old-test", "/1.0/instances/ci-runner?project=dev"],
+  "project": "default"
+ },
+ {
+  "config": {"limits.cpu": "4", "limits.memory": "8GiB"},
+  "description": "Virtual machines with room",
+  "devices": {"root": {"path": "/", "pool": "default", "size": "40GiB", "type": "disk"}},
+  "name": "vm-large",
+  "used_by": ["/1.0/instances/db"],
+  "project": "default"
+ }
+]

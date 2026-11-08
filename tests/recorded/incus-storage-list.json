@@ -1,0 +1,12 @@
+[
+ {
+  "config": {"size": "30GiB", "source": "/var/lib/incus/disks/default.img", "zfs.pool_name": "default"},
+  "description": "",
+  "name": "default",
+  "driver": "zfs",
+  "used_by": ["/1.0/images/8c4c1e1f0a2b6d3e9f7a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e", "/1.0/instances/web",
+              "/1.0/instances/db", "/1.0/instances/old-test", "/1.0/instances/ci-runner?project=dev", "/1.0/profiles/default"],
+  "status": "Created",
+  "locations": ["none"]
+ }
+]

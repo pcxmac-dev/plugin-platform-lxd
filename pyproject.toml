@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plugin-platform-lxd"
+version = "0.1.0"  # the plugin's own release (CHANGELOG.md); the app shows it on the Plugins view
+description = "LXC / LXD for Liminal: Incus, LXD or classic LXC on the native Linux machine the platform runs on, its containers and virtual machines, snapshots, images, profiles, storage pools, networks and the daemon's services; changed only when asked."
+readme = "README.md"
+requires-python = ">=3.10"
+# the library it plugs into (the machine kind: liminal_libs.machines, plugin API 2.1; linux.why_not_native and
+# MachinePlugin.not_for_here since 1.27.0, machines.services since 1.28.0; its icon, lxd, in icons.js since 1.33.0)
+dependencies = ["liminal-libs>=1.33.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.entry-points."liminal.providers"]
+lxd = "plugin_platform_lxd"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
