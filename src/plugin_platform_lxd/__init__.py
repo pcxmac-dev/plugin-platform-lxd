@@ -39,7 +39,7 @@ from .inventory import Inventory, parse as parse_read, parse_lxc, read_script
 from .system import (PROBE, PROCESS, SOCKETS, Probe, distribution, init_words, install_words, looks_like_version,
                      parse as parse_probe)
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 SUDO_S = 300.0  # sudo -n's answer kept this long: a refusal is logged by sudo each time it is asked
 NAMES = {"incus": "Incus", "lxd": "LXD", "lxc": "LXC"}
 TOOL = {"incus": "incus", "lxd": "lxc", "lxc": "lxc-ls"}
@@ -303,6 +303,8 @@ class LxdPlugin(MachinePlugin):
         elif "read" in self._learned and self._learned.get("backend") == ctx.backend:
             seen["read"] = self._learned["read"]
         self._learned.update(seen)
+        if "read" not in seen:  # another backend's last read never stays on this one's card (0.2.1)
+            self._learned.pop("read", None)
 
     def api_facts(self) -> dict:
         """What it learned of its APIs while it ran (plugin API 2.2), asking nothing: the software and its version (the

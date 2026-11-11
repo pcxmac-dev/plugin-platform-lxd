@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 (2026-11-11)
+
+Another backend's last read no longer stays on the card when the look finds a different one (the audit before the cloud plugins' keys).
+
 ## 0.2.0 (2026-11-11)
 
 Its API on its page (plugin API 2.2, liminal-libs 1.49.0; the user: "each plugin should reflect the the API its attached
