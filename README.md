@@ -10,7 +10,7 @@ scope of linux administration is only on native linux O/S"; "it's not for admini
 
 ## What it does
 
-A machine plugin of the platform (`liminal_libs.machines.MachinePlugin`, plugin API 2.1, its icon LXD's logo: `lxd`,
+A machine plugin of the platform (`liminal_libs.machines.MachinePlugin`, plugin API 2.2, its icon LXD's logo: `lxd`,
 a cube of small cubes, in the library's icons.js since 1.33.0), through the library's `machines.linux.Shell` on this
 machine:
 
@@ -73,6 +73,27 @@ snap's client is found in `/snap/bin` too.
 On Windows, on macOS and inside a WSL distribution (its kernel's release names Microsoft or WSL, or WSL's variables
 are set) it runs no command at all: its status says why with `applies` False, so the platform shows it as not for
 this machine and offers no setup; every hook is refused. The check is the library's (`machines.linux.why_not_native`).
+
+## Its API
+
+What it attaches to, as its page shows it (plugin API 2.2: `apis.py`, read on the projects' pages on 2026-11-11), each
+one's parts and commands, those the plugin uses first and the rest after them:
+
+- **Incus**: [its documentation](https://linuxcontainers.org/incus/docs/main/), the
+  [incus command](https://linuxcontainers.org/incus/docs/main/reference/manpages/incus/), the
+  [REST API](https://linuxcontainers.org/incus/docs/main/rest-api/) and its
+  [specification](https://linuxcontainers.org/incus/docs/main/rest-api-spec/).
+- **LXD**: [its documentation](https://canonical.com/lxd/docs/latest/), the
+  [lxc command](https://canonical.com/lxd/docs/latest/reference/manpages/lxc/), the
+  [REST API](https://canonical.com/lxd/docs/latest/restapi_landing/), [the snap](https://snapcraft.io/lxd).
+- **LXC (classic)**: [LXC](https://linuxcontainers.org/lxc/) and its [manual pages](https://linuxcontainers.org/lxc/manpages/).
+- **Linux services and rights**: [systemctl](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html),
+  [OpenRC](https://github.com/OpenRC/openrc/blob/master/user-guide.md), [sudo](https://www.sudo.ws/docs/man/sudo.man/)
+  (`-n`: never a password asked).
+
+`api_facts()` says what its last look and read said, asking nothing: the software and its version, the daemon, the
+rights, the counts, the init system and the services. `LIMINAL_VENDOR_PAGES=1 pytest tests/test_apis.py` checks that
+every address on the cards still answers.
 
 ## Its hooks
 

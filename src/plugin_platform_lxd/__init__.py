@@ -33,12 +33,13 @@ from liminal_libs.machines import linux
 from liminal_libs.machines.linux import Shell
 from liminal_libs.machines.plugin import CommandError, MachinePlugin
 
+from . import apis as cards
 from . import inventory as inv_mod
 from .inventory import Inventory, parse as parse_read, parse_lxc, read_script
 from .system import (PROBE, PROCESS, SOCKETS, Probe, distribution, init_words, install_words, looks_like_version,
                      parse as parse_probe)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 SUDO_S = 300.0  # sudo -n's answer kept this long: a refusal is logged by sudo each time it is asked
 NAMES = {"incus": "Incus", "lxd": "LXD", "lxc": "LXC"}
 TOOL = {"incus": "incus", "lxd": "lxc", "lxc": "lxc-ls"}
@@ -249,7 +250,10 @@ class LxdPlugin(MachinePlugin):
     about = ("Incus, LXD or classic LXC on the native Linux machine the platform runs on, never a WSL distribution: the "
              "containers and virtual machines, their snapshots, the images, profiles, storage pools, networks and the "
              "daemon's services; changed only when asked")
-    api = "2.1"
+    api = "2.2"
+    # what it attaches to (plugin API 2.2): Incus, LXD, classic LXC's tools, and the Linux services and rights it reads and
+    # starts the daemons through (apis.py: each one's pages, parts and calls)
+    apis = cards.APIS
     order = 705  # the machine's own instances: WSL's on Windows (700-702), LXC / LXD and libvirt on Linux
     ICON = "lxd"  # LXD's logo, a cube of small cubes (icons.js, liminal-libs 1.33.0)
     HOOKS = (*MachinePlugin.HOOKS, "power", "snapshot", "restore", "delete", "service", "wake")
@@ -260,6 +264,8 @@ class LxdPlugin(MachinePlugin):
         self._native = native  # a test's word for why_not_native(): "" on a native Linux machine, else why not
         self._woken = False  # an idle daemon read once asked (Read now), until the platform lets the plugin go
         self._sudo: tuple[float, bool] | None = None  # (when, whether sudo -n ran without a password)
+        # what the last look and read said (api_facts, plugin API 2.2): kept in one dict its copies share, asked nothing
+        self._learned: dict = {}
 
     def not_for_here(self) -> str:
         """Why the machine the platform runs on is not a native Linux one, in words ("" when it is)."""
@@ -277,9 +283,61 @@ class LxdPlugin(MachinePlugin):
         return sh
 
     def detach(self) -> None:
-        """Let go by the platform: an idle daemon is no longer read until asked again."""
+        """Let go by the platform: an idle daemon is no longer read until asked again; what was learned goes too."""
         self._woken = False
+        self._learned.clear()
         super().detach()
+
+    def _remember(self, ctx: Context, inv: Inventory | None = None) -> None:
+        """What a look (and a read) said, kept for api_facts: no request of its own."""
+        p = ctx.probe
+        seen = {"at": time.time(), "backend": ctx.backend, "versions": dict(p.versions), "snap": tuple(p.snap),
+                "init": init_words(p), "distribution": distribution(p),
+                "units": {u.name: u.state for u in p.units.values() if u.known},
+                "daemon": daemon_words(ctx) if ctx.backend else "", "rights": ctx.access.words if ctx.access else "",
+                "sudo": self._sudo}
+        if inv is not None:
+            seen["read"] = {"instances": len(inv.instances), "running": sum(i.running for i in inv.instances),
+                            "snapshots": len(inv.snapshots), "images": len(inv.images), "profiles": len(inv.profiles),
+                            "pools": len(inv.pools), "networks": len(inv.networks), "problems": list(inv.problems)}
+        elif "read" in self._learned and self._learned.get("backend") == ctx.backend:
+            seen["read"] = self._learned["read"]
+        self._learned.update(seen)
+
+    def api_facts(self) -> dict:
+        """What it learned of its APIs while it ran (plugin API 2.2), asking nothing: the software and its version (the
+        snap's too), the daemon and the rights as the last look found them, the last read's counts and troubles; the init
+        system, the distribution, the daemons' services and whether sudo -n answered. Nothing looked at yet: {}."""
+        seen = dict(self._learned)
+        if not seen:
+            return {}
+        when = time.strftime("%b %d %H:%M:%S", time.localtime(seen["at"]))
+        out: dict[str, dict[str, str]] = {}
+        backend = seen.get("backend")
+        if backend:
+            card = {"incus": cards.INCUS, "lxd": cards.LXD, "lxc": cards.LXC}[backend]
+            tool = TOOL[backend]
+            facts = {"Looked at": when, "Version": seen["versions"].get(tool) or "not said"}
+            if backend == "lxd" and seen.get("snap"):
+                facts["Snap"] = " ".join(str(x) for x in seen["snap"])
+            facts["Daemon"], facts["Rights"] = seen["daemon"], seen["rights"]
+            read = seen.get("read")
+            if read:
+                what = "containers" if backend == "lxc" else "instances"
+                facts["Read"] = (f"{read['instances']} {what} ({read['running']} running), {read['snapshots']} snapshots"
+                                 + ("" if backend == "lxc" else f", {read['images']} images, {read['profiles']} profiles, "
+                                                                f"{read['pools']} pools, {read['networks']} networks"))
+                if read["problems"]:
+                    facts["Trouble"] = "; ".join(read["problems"])[:200]
+            out[card] = facts
+        services = {"Looked at": when, "Init system": seen["init"], "Distribution": seen["distribution"]}
+        if seen.get("units"):
+            services["Services"] = ", ".join(f"{n} {s}" for n, s in sorted(seen["units"].items()))
+        sudo = self._sudo or seen.get("sudo")
+        if sudo:
+            services["sudo -n"] = "answers without a password" if sudo[1] else "asks a password: not used"
+        out[cards.SERVICES] = services
+        return out
 
     # -- looking --------------------------------------------------------------------------------------------------
     def _probe(self, sh: Shell) -> Probe:
@@ -293,7 +351,9 @@ class LxdPlugin(MachinePlugin):
         p = self._probe(sh)
         found = backends(p)
         if not found:
-            return Context(sh, p, None)
+            ctx = Context(sh, p, None)
+            self._remember(ctx)
+            return ctx
         backend = found[0]
 
         def sudo() -> bool:
@@ -306,7 +366,9 @@ class LxdPlugin(MachinePlugin):
                     self._sudo = (now, False)
             return self._sudo[1]
         state, by = daemon_state(p, backend)
-        return Context(sh, p, backend, tuple(found[1:]), access_of(p, backend, sudo), state, by)
+        ctx = Context(sh, p, backend, tuple(found[1:]), access_of(p, backend, sudo), state, by)
+        self._remember(ctx)
+        return ctx
 
     def _ready(self) -> Context:
         """The context for a change or a read asked: refused when nothing is installed or the rights are missing."""
@@ -372,6 +434,8 @@ class LxdPlugin(MachinePlugin):
             inv = self._inventory(ctx) if read else None
         except CommandError as e:  # the read itself refused (sudo -n for sh, a timeout): said, never raised
             inv = Inventory(problems=[str(e)], denied=e.denied)
+        if inv is not None:
+            self._remember(ctx, inv)
         problems = []
         if ctx.daemon == "stopped":
             problems.append(f"the {ctx.title} daemon is stopped ({ctx.daemon_by}): Start… under Daemons starts it")
@@ -692,6 +756,7 @@ class LxdPlugin(MachinePlugin):
         ctx = self._ready()
         self._woken = True
         inv = self._inventory(ctx)
+        self._remember(ctx, inv)
         if inv.problems:
             return answer(f"read, with trouble: {inv.problems[0]}", "\n".join(inv.problems[1:]), ok=False)
         return answer(f"{ctx.title} read: {plural(len(inv.instances), 'instance')}, {sum(i.running for i in inv.instances)} running")
