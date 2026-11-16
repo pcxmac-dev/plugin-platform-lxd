@@ -39,7 +39,7 @@ from .inventory import Inventory, parse as parse_read, parse_lxc, read_script
 from .system import (PROBE, PROCESS, SOCKETS, Probe, distribution, init_words, install_words, looks_like_version,
                      parse as parse_probe)
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 SUDO_S = 300.0  # sudo -n's answer kept this long: a refusal is logged by sudo each time it is asked
 NAMES = {"incus": "Incus", "lxd": "LXD", "lxc": "LXC"}
 TOOL = {"incus": "incus", "lxd": "lxc", "lxc": "lxc-ls"}
@@ -256,6 +256,7 @@ class LxdPlugin(MachinePlugin):
     apis = cards.APIS
     order = 705  # the machine's own instances: WSL's on Windows (700-702), LXC / LXD and libvirt on Linux
     ICON = "lxd"  # LXD's logo, a cube of small cubes (icons.js, liminal-libs 1.33.0)
+    SECTION = "virtualization"  # drawn under the platform's Virtualization plugins (liminal-platform 0.26.0)
     HOOKS = (*MachinePlugin.HOOKS, "power", "snapshot", "restore", "delete", "service", "wake")
 
     def __init__(self, shell: Shell | None = None, runner=None, native: str | None = None):

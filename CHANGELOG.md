@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 (2026-11-15)
+
+Drawn under the platform's Virtualization plugins section, in the list on the left (the user: "platform needs a virtualization plugins section"; "just like cloud plugins"; "docker, libvirt, kubernetes, lxc should be in virtualization"): `SECTION = "virtualization"`, liminal-libs 1.51.0's machine-plugin attribute. liminal-platform 0.26.0 draws it; an older platform keeps the plugin under Machine plugins. Nothing else changes.
+
 ## 0.2.1 (2026-11-11)
 
 Another backend's last read no longer stays on the card when the look finds a different one (the audit before the cloud plugins' keys).
