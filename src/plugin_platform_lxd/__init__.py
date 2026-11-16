@@ -1,9 +1,12 @@
 """LXC / LXD for Liminal (the user, 2026-11-08: "LXC/LXD plugins and LIBVIRT plugin for virtualization"; of the Linux
 plugins: "make sure its compatable with systemd/openrc ... make sure its compatible with major distributions and gentoo
-linux"): Incus (LXD's community fork), LXD or classic LXC, whichever this machine has, on the native Linux machine the
-platform runs on and nowhere else (the user: "the scope of linux administration is only on native linux O/S"; "it's
-not for administrating WSL instances"): on Windows, on macOS and inside a WSL distribution it runs no command at all
-(the library's machines.linux.why_not_native), asks nothing and offers no setup.
+linux"): Incus (LXD's community fork), LXD or classic LXC, whichever this machine has, on the Linux the platform runs
+on and nowhere else: a machine of its own, or a WSL distribution the platform runs inside (0.3.0; the user,
+2026-11-15: "wsl and firewall linux should always work under linux, if wsl prevents or misses some capability this
+should reflect in the plugin": inside WSL its page ends with what WSL changes for containers and virtual machines,
+`under_wsl`). On Windows and on macOS it runs no command at all (the library's machines.linux.why_not_native), asks
+nothing and offers no setup; a platform on Windows never reaches into a WSL distribution from outside (the user,
+2026-11-08: "it's not for administrating WSL instances").
 
 Read through the client's JSON (`incus`, or LXD's `lxc`, `--format json`): the instances (containers and virtual
 machines: state, IPv4, image, profiles, snapshots), the images, the profiles, the storage pools and the networks;
@@ -24,6 +27,7 @@ status says how to give the rights. Classic LXC's containers are root's: root, o
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections import Counter
@@ -39,7 +43,7 @@ from .inventory import Inventory, parse as parse_read, parse_lxc, read_script
 from .system import (PROBE, PROCESS, SOCKETS, Probe, distribution, init_words, install_words, looks_like_version,
                      parse as parse_probe)
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 SUDO_S = 300.0  # sudo -n's answer kept this long: a refusal is logged by sudo each time it is asked
 NAMES = {"incus": "Incus", "lxd": "LXD", "lxc": "LXC"}
 TOOL = {"incus": "incus", "lxd": "lxc", "lxc": "lxc-ls"}
@@ -69,9 +73,44 @@ class Refusal(ValueError):
         self.accept = accept
 
 
+def _kvm_there() -> bool:
+    return os.path.exists("/dev/kvm")
+
+
+def under_wsl() -> dict | None:
+    """What running inside a WSL distribution changes for containers and virtual machines, as a table for the page (0.3.0; the user,
+    2026-11-15: "if wsl prevents or misses some capability this should reflect in the plugin"). None on a machine of
+    its own, and with a library that does not say (before liminal-libs 1.57.0, which refused a WSL kernel)."""
+    said = getattr(linux, "wsl", None)
+    name = said() if said is not None else ""
+    if not name:
+        return None
+    generation = linux.wsl_generation()
+    rows = [["This Linux", f"WSL {generation or 2}: {name}", "a WSL distribution on Windows: its kernel is WSL's"]]
+    if generation == 1:
+        rows.append(["Containers", "none", "WSL 1 has neither the namespaces nor the control groups a container needs: none can "
+                                           "run in this distribution"])
+    else:
+        rows.append(["Containers", "the kernel's own", "WSL 2's kernel has the namespaces and control groups containers need"])
+        kvm = _kvm_there()
+        rows.append(["Virtual machines", "/dev/kvm is here" if kvm else "no /dev/kvm",
+                     "instances of the virtual machine type run on the processor itself" if kvm else
+                     "an instance of the virtual machine type needs KVM (containers do not). WSL 2 gives /dev/kvm when the "
+                     "processor has virtualization and Windows passes it on (`nestedVirtualization=true` under `[wsl2]` in "
+                     ".wslconfig, its default on Windows 11; then `wsl --shutdown` from Windows)"])
+    runs = linux.systemd_runs()
+    rows.append(["Init", "systemd" if runs else "not systemd", "the daemon is started as on any Linux" if runs else
+                 "Incus and LXD run as systemd units here (LXD's snap needs systemd too): `[boot]` `systemd=true` in "
+                 "/etc/wsl.conf turns systemd on (then `wsl --shutdown` from Windows)"])
+    rows.append(["Running", "while Windows keeps it started",
+                 "Windows stops a WSL distribution once nothing uses it: its containers and virtual machines stop with it"])
+    return {"title": "Under WSL", "note": "What running inside a WSL distribution changes for this plugin.",
+            "columns": [{"title": "What"}, {"title": "Here"}, {"title": "What it means"}], "rows": rows}
+
+
 def why_not_native(system: str | None = None, release: str | None = None, env=None) -> str:
-    """Why the machine the platform runs on is not a native Linux one, in words ("" when it is): the library's check
-    (liminal-libs 1.27.0, shared with the Linux administration and firewall plugins)."""
+    """Why the machine the platform runs on is not one this plugin is for, in words ("" on Linux; a WSL distribution
+    included with liminal-libs 1.57.0): the library's check (shared with the Linux administration and firewall plugins)."""
     return linux.why_not_native("LXC / LXD", system, release, env)
 
 
@@ -243,11 +282,11 @@ def daemon_words(ctx: Context) -> str:
 
 
 class LxdPlugin(MachinePlugin):
-    """Incus, LXD or classic LXC on this native Linux machine: read, and changed only when asked."""
+    """Incus, LXD or classic LXC on the Linux the platform runs on: read, and changed only when asked."""
 
     name = "lxd"
     title = "LXC / LXD"
-    about = ("Incus, LXD or classic LXC on the native Linux machine the platform runs on, never a WSL distribution: the "
+    about = ("Incus, LXD or classic LXC on the Linux the platform runs on (a WSL distribution it runs inside too): the "
              "containers and virtual machines, their snapshots, the images, profiles, storage pools, networks and the "
              "daemon's services; changed only when asked")
     api = "2.2"
@@ -274,13 +313,14 @@ class LxdPlugin(MachinePlugin):
 
     @property
     def shell(self) -> Shell:
-        """This native Linux machine's commands (root through sudo -n); refused anywhere else, and for a WSL target."""
+        """The commands of the Linux the platform runs on (root through sudo -n); refused anywhere else, and for a WSL
+        distribution reached from Windows (a target of `wsl -d`)."""
         note = self.not_for_here()
         if note:
             raise LxdError(note)
         sh = self._shell if self._shell is not None else Shell("local", runner=self._runner)
         if sh.target != "local":
-            raise LxdError(f"LXC / LXD is for this native Linux machine, never {sh.where}")
+            raise LxdError(f"LXC / LXD is for the Linux the platform runs on, never {sh.where}")
         return sh
 
     def detach(self) -> None:
@@ -399,7 +439,7 @@ class LxdPlugin(MachinePlugin):
         return parse_read(ctx.shell.sh(script, root=ctx.access.as_root, timeout=READ_S))
 
     def present(self) -> bool:
-        """Incus, LXD or classic LXC installed on a native Linux machine: never on Windows, macOS or in WSL."""
+        """Incus, LXD or classic LXC installed on the Linux the platform runs on: never on Windows or macOS."""
         if self.not_for_here():
             return False
         try:
@@ -409,6 +449,14 @@ class LxdPlugin(MachinePlugin):
 
     # -- the status -----------------------------------------------------------------------------------------------
     def status(self) -> dict:
+        """What the page shows; inside a WSL distribution its tables end with what WSL changes (under_wsl)."""
+        st = self._status()
+        table = None if st.get("applies") is False else under_wsl()
+        if table is not None:
+            st["tables"] = [*st.get("tables", []), table]
+        return st
+
+    def _status(self) -> dict:
         note = self.not_for_here()
         if note:  # not for this machine at all: asked nothing, no setup offered
             return self.not_here_status(note, tables=[], forms=[], actions=[])

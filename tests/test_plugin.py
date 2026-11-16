@@ -1,7 +1,8 @@
 """LXC / LXD over recorded outputs (nothing runs here): Incus, LXD's snap and classic LXC read and changed through a
 stand-in for this machine's commands; systemd and OpenRC (Gentoo's incus, Alpine's incusd), the rights (incus-admin,
 lxd, root, sudo -n, none), an idle daemon never woken by a read, a stopped one started only when asked; how each
-distribution installs it; only on a native Linux machine: on Windows, macOS or in a WSL distribution nothing runs."""
+distribution installs it; only on Linux, a WSL distribution the platform runs inside included (0.3.0): on Windows or
+macOS nothing runs."""
 from __future__ import annotations
 
 import json
@@ -531,19 +532,21 @@ def test_the_command_line(capsys):
     assert main(["start", "--force"], machine=p) == 2  # a flag is not a name
 
 
-def test_only_a_native_linux_machine_is_driven():
-    """The user, 2026-11-08: "the scope of linux administration is only on native linux O/S"; "it's not for administrating
-    WSL instances": on Windows, macOS or in a WSL distribution no command runs at all, the status says why with applies
-    False (the platform shows "Not for this machine", no setup), and every hook is refused."""
-    windows = why_not_native("win32", "10", {})
-    assert windows == "LXC / LXD is for a native Linux machine, and this one runs Windows; Liminal's WSL distributions are the WSL plugins'"
-    wsl = why_not_native("linux", "6.6.87.2-microsoft-standard-WSL2", {"WSL_DISTRO_NAME": "Liminal-Ubuntu"})
-    assert wsl.endswith("not a WSL instance, and this is WSL's Liminal-Ubuntu on Windows")
-    mac = why_not_native("darwin", "24.1.0", {})
-    assert "this one runs macOS" in mac and why_not_native("linux", "6.11.5-gentoo", {}) == ""
+def test_only_the_linux_the_platform_runs_on_is_driven():
+    """On Windows or macOS no command runs at all, the status says why with applies False (the platform shows "Not for
+    this machine", no setup), and every hook is refused: a platform there does not reach into a WSL distribution from
+    outside (the user, 2026-11-08: "it's not for administrating WSL instances"). On Linux it works, inside a WSL
+    distribution too (0.3.0, liminal-libs 1.57.0; the user, 2026-11-15: "wsl and firewall linux should always work
+    under linux")."""
+    windows, mac = why_not_native("win32", "10", {}), why_not_native("darwin", "24.1.0", {})
+    assert windows.startswith("LXC / LXD is for ") and "and this one runs Windows" in windows
+    assert windows.endswith("Liminal's WSL distributions are the WSL plugins'") and "this one runs macOS" in mac
+    assert why_not_native("linux", "6.11.5-gentoo", {}) == ""  # a Linux machine of its own
+    if hasattr(linux_mod, "wsl_table"):  # liminal-libs 1.57.0: a WSL kernel is Linux like any other
+        assert why_not_native("linux", "6.6.87.2-microsoft-standard-WSL2", {"WSL_DISTRO_NAME": "Liminal-Ubuntu"}) == ""
     if sys.platform == "win32":
         assert MACHINE.not_for_here() == windows and not MACHINE.present()  # this PC: asked nothing
-    for note in (windows, wsl, mac):
+    for note in (windows, mac):
         ran: list = []
         p = LxdPlugin(shell=Shell("local", runner=lambda args, timeout: ran.append(args) or (0, "", "")), native=note)
         st = p.status()
@@ -551,9 +554,44 @@ def test_only_a_native_linux_machine_is_driven():
         assert (st["tables"], st["forms"], st["actions"]) == ([], [], []) and not p.present() and p.setup(log=lambda m: None) == []
         for ask in (lambda: p.power("web", "stop"), lambda: p.snapshot("web"), lambda: p.restore("web", "snap0", accept_restore=True),
                     lambda: p.delete("web", accept_delete=True), lambda: p.service("incus.service"), p.wake, lambda: p.run("list")):
-            with pytest.raises(CommandError, match="native Linux machine"):
+            with pytest.raises(CommandError, match="and this one runs"):
                 ask()
         assert ran == []  # nothing ran anywhere
     in_wsl = LxdPlugin(shell=Shell("wsl:Liminal-Ubuntu", runner=lambda args, timeout: (0, "", "")), native="")
     with pytest.raises(LxdError, match="never WSL's Liminal-Ubuntu"):
         in_wsl.power("web", "stop")
+
+
+def test_inside_a_wsl_distribution_it_works_and_says_what_wsl_changes(monkeypatch):
+    """0.3.0 (the user, 2026-11-15: "wsl and firewall linux should always work under linux, if wsl prevents or misses some capability this should reflect in the plugin"): the platform inside a WSL distribution reads LXC / LXD as on
+    any Linux, and its page ends with what WSL changes for containers and virtual machines."""
+    import plugin_platform_lxd as mod
+
+    not_installed = {"present": False, "summary": "not installed", "valid": False, "why": "how to install it", "tables": [],
+                     "forms": [], "actions": []}
+    monkeypatch.setattr(LxdPlugin, "_status", lambda self: dict(not_installed))
+    monkeypatch.setattr(linux_mod, "wsl", lambda release=None, env=None: "", raising=False)  # a machine of its own
+    assert mod.under_wsl() is None and LxdPlugin(native="").status()["tables"] == []
+    monkeypatch.setattr(linux_mod, "wsl", lambda release=None, env=None: "Ubuntu", raising=False)
+    monkeypatch.setattr(linux_mod, "wsl_generation", lambda release=None: 2, raising=False)
+    monkeypatch.setattr(linux_mod, "systemd_runs", lambda: True, raising=False)
+    monkeypatch.setattr(mod, "_kvm_there", lambda: False)
+    table = mod.under_wsl()
+    rows = {r[0]: r for r in table["rows"]}
+    assert table["title"] == "Under WSL" and rows["This Linux"][1] == "WSL 2: Ubuntu" and "Running" in rows
+    assert rows["Containers"][1] == "the kernel's own" and rows["Virtual machines"][1] == "no /dev/kvm"
+    assert "nestedVirtualization" in rows["Virtual machines"][2] and rows["Init"][1] == "systemd"
+    monkeypatch.setattr(mod, "_kvm_there", lambda: True)
+    assert {r[0]: r for r in mod.under_wsl()["rows"]}["Virtual machines"][1] == "/dev/kvm is here"
+    monkeypatch.setattr(linux_mod, "wsl_generation", lambda release=None: 1, raising=False)
+    assert "none can run" in {r[0]: r for r in mod.under_wsl()["rows"]}["Containers"][2]  # WSL 1
+    monkeypatch.setattr(linux_mod, "wsl_generation", lambda release=None: 2, raising=False)
+    monkeypatch.setattr(linux_mod, "systemd_runs", lambda: False, raising=False)
+    assert "systemd=true" in {r[0]: r for r in mod.under_wsl()["rows"]}["Init"][2]
+    st = LxdPlugin(native="").status()  # not installed yet: said as on any Linux, and what WSL changes after it
+    assert st["summary"] == "not installed" and [t["title"] for t in st["tables"]] == ["Under WSL"]
+    monkeypatch.setattr(LxdPlugin, "_status", lambda self: {"present": False, "applies": False, "tables": []})
+    assert LxdPlugin(native="x").status()["tables"] == []  # not for this machine: no such table
+    monkeypatch.setattr(LxdPlugin, "_status", lambda self: dict(not_installed))
+    monkeypatch.delattr(linux_mod, "wsl", raising=False)  # an older library: the plugin as it was
+    assert mod.under_wsl() is None and LxdPlugin(native="").status()["tables"] == []
