@@ -64,9 +64,11 @@ class FakeIncus:
     liminal-oci (the library's FakeDocker), each `sh -c ENV_SH` read as that shell reads it."""
 
     def __init__(self, client=INCUS, oci=True, tools=("skopeo", "umoci"), version="6.18", pool="default",
-                 liminal_oci=None, docker=None):
+                 liminal_oci=None, docker=None, initial=True):
         self.client, self.version, self.pool = client, version, pool
         self.extensions = ["instance_oci"] if oci else []
+        self.initial = initial  # the API extension storage_volumes_initial_values (initial.uid on a custom volume)
+        self.oci_address = "10.120.17.50"  # liminal-oci's own on incusbr0, while it runs ("" for none yet)
         self.tools = tuple(tools)
         self.instances: dict[str, dict] = {}
         self.volumes: dict[str, dict] = {}
@@ -148,7 +150,15 @@ class FakeIncus:
                 if d.get("type") == "disk" and d.get("source") == volume]
 
     def _instance_json(self, i: dict) -> dict:
-        return {**copy.deepcopy(i), "expanded_devices": copy.deepcopy(i["devices"])}
+        out = {**copy.deepcopy(i), "expanded_devices": copy.deepcopy(i["devices"])}
+        if i["name"] == svcs.OCI:  # the default profile's NIC on incusbr0, and while it runs the address Incus gave it
+            out["expanded_devices"].setdefault("eth0", {"type": "nic", "network": "incusbr0", "name": "eth0"})
+            if i["status"] == "Running" and self.oci_address:
+                out["state"] = {"network": {"eth0": {"hwaddr": "00:16:3e:4c:00:01", "addresses": [
+                    {"family": "inet6", "address": "fe80::216:3eff:fe4c:1", "netmask": "64", "scope": "link"},
+                    {"family": "inet", "address": "169.254.3.3", "netmask": "16", "scope": "link"},
+                    {"family": "inet", "address": self.oci_address, "netmask": "24", "scope": "global"}]}}}
+        return out
 
     def _answer(self, a, stdin):
         if a[0] == "list":
@@ -286,7 +296,7 @@ class FakeIncus:
 
     # -- the services' read, as the plugin's script asks it ----------------------------------------------------------------
     def services_answer(self) -> str:
-        server = {"api_extensions": ["storage_volumes_initial_values", *self.extensions],
+        server = {"api_extensions": [*(["storage_volumes_initial_values"] if self.initial else []), *self.extensions],
                   "environment": {"server_version": self.version, "kernel_architecture": "x86_64"}}
         profile = {"name": "default", "devices": {"root": {"type": "disk", "path": "/", "pool": self.pool},
                                                   "eth0": {"type": "nic", "network": "incusbr0", "name": "eth0"}}}
@@ -585,7 +595,9 @@ def test_inside_liminal_oci_volumes_are_custom_volumes_and_ports_proxy_devices(d
     assert w.incus.docker.volumes[vol]["labels"]["liminal.service"] == "jenkins/ci"
     made = next(a for a in w.incus.docker.argv_of("volume create"))
     assert "device=/srv/liminal/liminal-jenkins-ci-home" in made and "o=bind" in made
-    assert any(c["args"][-3:] == ["chown", "1000:1000", f"/srv/liminal/{vol}"] for c in w.incus.calls)
+    # 0.4.1: made for its spec, owned by its owner as the daemon makes it (initial.uid): no chown inside
+    assert (w.incus.volumes[vol]["config"]["initial.uid"], w.incus.volumes[vol]["config"]["initial.gid"]) == ("1000", "1000")
+    assert not any("chown" in c["args"] for c in w.incus.calls)
     proxies = {k: v for k, v in devices.items() if v["type"] == "proxy"}
     assert {v["listen"] for v in proxies.values()} == {"tcp:0.0.0.0:8080", "tcp:[::]:8080"}
     assert {v["connect"] for v in proxies.values()} == {"tcp:127.0.0.1:8080"}
@@ -702,13 +714,17 @@ def test_a_stopped_daemon_or_no_rights_plan_nothing(tmp_path):
         assert m.services == 0 and wo.incus.calls == []
 
 
-def test_inside_wsl_its_stack_stays_the_linux_platforms(tmp_path, monkeypatch):
+def test_inside_wsl_its_stack_is_wsl_as_every_container_plugin_names_it(tmp_path, monkeypatch):
+    """0.4.1 (liminal-libs 1.95.0's containers.stack_of, decided 2026-11-25): "wsl" inside WSL, "linux" outside."""
     from liminal_libs.machines import linux as linux_mod
 
-    monkeypatch.setattr(linux_mod, "wsl", lambda release=None, env=None: "Ubuntu")
-    w = World(tmp_path)
+    w = World(tmp_path / "linux")
     t = w.jenkins.call("hosting", "jenkins", {"linux": spec()})["targets"][0]
-    assert (t["stack"], t["path"], t["firewall"]) == ("linux", "wsl-nat", "windows") and "WSL's relay" in t["lan_words"]
+    assert (t["stack"], t["path"], t["firewall"]) == ("linux", "direct", "linux")
+    monkeypatch.setattr(linux_mod, "wsl", lambda release=None, env=None: "Ubuntu")
+    w = World(tmp_path / "wsl")
+    t = w.jenkins.call("hosting", "jenkins", {"linux": spec()})["targets"][0]
+    assert (t["stack"], t["path"], t["firewall"]) == ("wsl", "wsl-nat", "windows") and "WSL's relay" in t["lan_words"]
 
 
 def test_inside_liminal_oci_a_volume_of_another_service_is_never_made_over(docker_world):
@@ -778,3 +794,116 @@ def service_flow(tmp_path) -> list[list[str]]:
 def test_the_service_flow_ends_well_on_both(tmp_path):
     ran = service_flow(tmp_path)
     assert ran and any("init" in a for a in ran) and any("docker" in a for a in ran)
+
+
+# -- 0.4.1: liminal-libs 1.95.0's hooks ------------------------------------------------------------------------------------
+def test_an_incus_volume_is_made_for_its_spec_and_owned_by_its_owner(world):
+    world.grant()
+    rt = world.lxd.runtime_of(world.lxd.target("incus"))
+    vol = svcs.C.Volume("home", "/var/jenkins_home", "its jobs", 1000)
+    labels = {"liminal": "volume", "liminal.service": "jenkins/ci"}
+    assert rt.make_volume_for("liminal-jenkins-ci-home", labels, vol) is True
+    assert rt.make_volume_for("liminal-other", labels, svcs.C.Volume("x", "/x", "x")) is True  # no owner said: none given
+    made = world.incus.volumes
+    assert (made["liminal-jenkins-ci-home"]["config"]["initial.uid"], made["liminal-jenkins-ci-home"]["config"]["initial.gid"]) == (
+        "1000", "1000")
+    assert "initial.uid" not in made["liminal-other"]["config"]
+    assert not hasattr(rt, "owners")  # 0.4.1: kept by no runtime: the spec's volume says it
+
+
+def test_inside_liminal_oci_a_daemon_without_initial_values_gets_a_chown(tmp_path):
+    w = World(tmp_path, backend="lxd", liminal_oci="Running",
+              incus=FakeIncus(LXC, oci=False, tools=(), liminal_oci="Running", docker=FakeDocker(version="28.5.1"),
+                              initial=False))
+    w.grant()
+    _, end = w.carry("install", spec(), target="lxd")
+    assert end["ok"], end
+    vol = "liminal-jenkins-ci-home"
+    assert "initial.uid" not in w.incus.volumes[vol]["config"]
+    assert any(c["args"][-3:] == ["chown", "1000:1000", f"/srv/liminal/{vol}"] for c in w.incus.calls)
+
+
+def test_an_incus_update_is_backed_up_by_a_snapshot_without_tar_and_put_back_from_its_record(world):
+    world.grant()
+    s = spec()
+    s["parts"][0]["image"]["tar"] = False  # 0.4.1: an image without tar needs no "no backup" accept: Incus snapshots
+    world.carry("install", s, target="incus")
+    world.incus.volumes["liminal-jenkins-ci-home"]["files"]["config.xml"] = b"<old/>"
+    newer = copy.deepcopy(s)
+    newer["parts"][0]["image"]["digest"] = "sha256:" + "b" * 64
+    plan, end = world.carry("update", newer)
+    assert end["ok"], end
+    assert "accept_no_backup" not in [a["name"] for a in plan["accepts"]]
+    words = json.dumps(plan)
+    assert "snapshot the volume liminal-jenkins-ci-home" in words
+    snap = next(iter(world.incus.volumes["liminal-jenkins-ci-home"]["snapshots"]))
+    records = list(world.lxd._backups_of("jenkins/ci").glob("*/home.snapshot.json"))
+    assert len(records) == 1 and not list(world.lxd._backups_of("jenkins/ci").glob("*/home.tar"))
+    assert json.loads(records[0].read_text("utf-8")) == {"kind": "snapshot", "volume": "liminal-jenkins-ci-home",
+                                                         "said": snap}
+    assert any(f"snapshotted by its engine: {snap}" in line for line in end["lines"])
+    assert not any("bytes" in line for line in end["lines"])
+    world.incus.volumes["liminal-jenkins-ci-home"]["files"]["config.xml"] = b"<converted/>"
+    _, end = world.carry("rollback", options={"choice": "backup"})
+    assert end["ok"], end
+    assert world.incus.volumes["liminal-jenkins-ci-home"]["files"]["config.xml"] == b"<old/>"
+    assert any(f"(the snapshot {snap})" in line for line in end["lines"])
+
+
+def test_an_incus_restore_reads_its_own_record_and_a_0_4_0_one_and_no_other(world, tmp_path):
+    world.grant()
+    world.carry("install", spec(), target="incus")
+    rt = world.lxd.runtime_of(world.lxd.target("incus"))
+    assert rt.backup_kind(None) == "snapshot"
+    vol = "liminal-jenkins-ci-home"
+    world.incus.volumes[vol]["files"]["a"] = b"1"
+    said = rt.backup(vol, "x", tmp_path / "20261125T000000Z" / "home.tar", lambda line: None, lambda: False)
+    assert said == "liminal-20261125T000000Z" and not (tmp_path / "20261125T000000Z" / "home.tar").exists()
+    world.incus.volumes[vol]["files"]["a"] = b"2"
+    old = tmp_path / "old.tar"  # a 0.4.0 backup's own record, kept in place of a tar
+    old.write_text(json.dumps({"kind": "incus-snapshot", "pool": "default", "volume": vol, "snapshot": said}), "utf-8")
+    rt.restore(vol, "x", old, lambda line: None, lambda: False)
+    assert world.incus.volumes[vol]["files"]["a"] == b"1"
+    for bad, why in (({"kind": "snapshot", "volume": "liminal-gocd-ci-home", "said": said}, "another volume"),
+                     ({"kind": "snapshot", "volume": vol, "said": "theirs"}, "no snapshot of Liminal's"),
+                     ({"kind": "incus-snapshot", "pool": "elsewhere", "volume": vol, "snapshot": said}, "another volume")):
+        f = tmp_path / "bad.snapshot.json"
+        f.write_text(json.dumps(bad), "utf-8")
+        with pytest.raises(Refusal, match=why):
+            rt.restore(vol, "x", f, lambda line: None, lambda: False)
+
+
+def test_each_runtime_says_who_can_read_a_secret_it_is_handed(world, tmp_path):
+    secret = [{"variable": "JENKINS_ADMIN_PASSWORD", "env": "ADMIN_PASSWORD"}]
+    world.grant()
+    plan = world.jenkins.call("service_plan", "install", "jenkins/ci", spec(secrets=secret), "incus", {})
+    kept = next(a for a in plan["accepts"] if a["name"] == "accept_kept_secret")
+    assert "incus config show" in json.dumps(kept) and "incus-admin" in json.dumps(kept)
+    assert not hasattr(type(world.lxd), "_kept_secret_words") or "_kept_secret_words" not in type(world.lxd).__dict__
+    d = World(tmp_path, backend="lxd", liminal_oci="Running")
+    d.grant()
+    plan = d.jenkins.call("service_plan", "install", "jenkins/ci", spec(secrets=secret), "lxd", {})
+    kept = next(a for a in plan["accepts"] if a["name"] == "accept_kept_secret")
+    assert "docker inspect" in json.dumps(kept) and svcs.OCI in json.dumps(kept)
+
+
+def test_inside_liminal_oci_its_networks_sit_behind_liminal_oci_and_it_is_a_found_member(docker_world):
+    w = docker_world
+    w.grant()
+    rt = w.lxd.runtime_of(w.lxd.target("lxd"))
+    assert rt.network_want(None, "jenkins/ci") == {"behind": "10.120.17.50"}
+    _, end = w.carry("install", spec(), target="lxd")
+    assert end["ok"], end
+    a = next(x for x in w.firewall._book.all() if x.sid == "jenkins/ci")
+    assert a.route and a.route["next_hop"] == "10.120.17.50"  # the route through liminal-oci's own address
+    routes = [s for steps in w.firewall.ran for s in steps if s["kind"] == "route"]
+    assert routes and "through 10.120.17.50 (the instance it sits behind)" in routes[0]["words"]
+    segs = w.jenkins.call("segments")["segments"]
+    bridge = next(s for s in segs if s["kind"] == "incus-bridge")
+    assert (bridge["bridge"], bridge["sid"], bridge["subnets"], bridge["assigns"]) == ("incusbr0", "", ["10.120.17.0/24"],
+                                                                                       "incus")
+    assert bridge["members"] == [{"sid": "", "part": "", "container": svcs.OCI, "mac": "00:16:3e:4c:00:01",
+                                  "ipv4": "10.120.17.50", "assigned": "incus"}]
+    assert any(s["kind"] == "nested" for s in segs)
+    w.incus.oci_address = ""  # no address yet: nothing said, the firewall's own way
+    assert rt.network_want(None, "jenkins/ci") == {}

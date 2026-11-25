@@ -46,6 +46,7 @@ from dataclasses import dataclass
 
 from liminal_libs.machines import linux
 from liminal_libs.machines.containerhost import ContainerHost, Outside
+from liminal_libs.machines import containers as C
 from liminal_libs.machines.containers import Target
 from liminal_libs.machines.linux import Shell
 from liminal_libs.machines.plugin import CommandError
@@ -57,7 +58,7 @@ from .inventory import Inventory, parse as parse_read, parse_lxc, read_script
 from .system import (PROBE, PROCESS, SOCKETS, Probe, distribution, init_words, install_words, looks_like_version,
                      parse as parse_probe)
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 SUDO_S = 300.0  # sudo -n's answer kept this long: a refusal is logged by sudo each time it is asked
 NAMES = {"incus": "Incus", "lxd": "LXD", "lxc": "LXC"}
 TOOL = {"incus": "incus", "lxd": "lxc", "lxc": "lxc-ls"}
@@ -951,14 +952,17 @@ class LxdPlugin(ContainerHost):
         return ready, out
 
     def _platform_lan(self) -> tuple[str, str, str, str]:
-        """(stack, path, the words of a port opened to your network, whose firewall decides). The stack is always the
-        Linux platform's own (its firewall-linux allocates from the Linux half and routes nothing to a bridge on its own
-        host), inside a WSL distribution too; there a port meets your network through WSL's NAT, which Windows'
-        firewall decides."""
+        """(stack, path, the words of a port opened to your network, whose firewall decides). The stack as every
+        container plugin names it (0.4.1, liminal-libs 1.95.0's containers.stack_of, decided 2026-11-25): "wsl" inside
+        a WSL distribution (every Linux there shares WSL 2's one VM; the Linux platform's firewall-linux there owns
+        "wsl" and allocates from the Linux half), "linux" on a Linux machine of its own. Inside WSL a port meets your
+        network through WSL's NAT, which Windows' firewall decides."""
         said = getattr(linux, "wsl", None)
-        if said is not None and said():
-            return "linux", "wsl-nat", WSL_LAN, "windows"
-        return "linux", "direct", LINUX_LAN, "linux"
+        in_wsl = bool(said is not None and said())
+        stack = C.stack_of(True, in_wsl)
+        if in_wsl:
+            return stack, "wsl-nat", WSL_LAN, "windows"
+        return stack, "direct", LINUX_LAN, "linux"
 
     def _read_services(self, ctx: Context) -> dict:
         """The services' read (one script, with the platform's rights): the server's extensions, the default pool,
@@ -1019,6 +1023,7 @@ class LxdPlugin(ContainerHost):
         pool = str(got.get("pool") or "")
         client = [*ctx.shell.prefix(root=ctx.access.as_root), ctx.client]
         oci_ok = ctx.backend == "incus" and "instance_oci" in (server.get("api_extensions") or [])
+        initial = "storage_volumes_initial_values" in (server.get("api_extensions") or [])  # 0.4.1: initial.uid
         missing = sorted({"skopeo", "umoci"} - set(got.get("tools") or ()))
         if not pool:
             return [Target(title=soft, mechanism=guess, state="not answering",
@@ -1049,7 +1054,8 @@ class LxdPlugin(ContainerHost):
         dversion = str((docker.get("Server") or {}).get("Version") or "")
         where = f"in custom volumes of {ctx.title}'s storage pool {pool}, bound into {svcs.OCI}"
         self._svc_seen[ctx.backend] = {"mechanism": "lxd-docker", "client": client, "pool": pool, "arch": arch,
-                                       "version": dversion, "lan": (path, lan_words), "where": where}
+                                       "version": dversion, "lan": (path, lan_words), "where": where,
+                                       "initial": initial}
         base["version"] = dversion
         return [Target(title=f"{title}, Docker {dversion}", mechanism="lxd-docker", where_data=where, **base)]
 
@@ -1068,7 +1074,8 @@ class LxdPlugin(ContainerHost):
         kw = dict(pool=seen["pool"], arch=seen["arch"], version=seen["version"], lan=seen["lan"], where_data=seen["where"])
         if seen["mechanism"] == "incus-oci":
             return svcs.IncusRuntime(seen["client"], self._service_command, self._stream, **kw)
-        return svcs.OciDocker(seen["client"], self._service_command, self._stream, **kw)
+        return svcs.OciDocker(seen["client"], self._service_command, self._stream, initial=bool(seen.get("initial")),
+                              **kw)
 
     def service_reads_wanted(self) -> bool:
         """Whether its page reads its services now: once a service plugin asked, a grant was made, a plan or a work is
@@ -1083,15 +1090,6 @@ class LxdPlugin(ContainerHost):
             kept = self._svc.targets
         return any(t.mechanism == "lxd-docker" and t.state == "not answering" and "not set up" in t.why
                    for t in (kept[1] if kept else ()))
-
-    def _kept_secret_words(self, t: Target, spec) -> str:
-        names = ", ".join(f"{s.variable} (as {s.env})" for s in spec.secrets())
-        if t.mechanism == "incus-oci":
-            return (f"{names}: handed to the instance in its configuration, on standard input; the {t.id} daemon keeps "
-                    "it in its database, which anyone in incus-admin (or root) can read (incus config show)")
-        return (f"{names}: handed to the container inside {svcs.OCI} by environment alone, crossing into it on "
-                f"standard input; Docker there keeps it in the container's settings, which anyone who may run commands "
-                f"in {svcs.OCI} can read (docker inspect)")
 
     def _service_command(self, argv, timeout, stdin=None, env=None, binary=False, out=None):
         if self._service_runner is not None:

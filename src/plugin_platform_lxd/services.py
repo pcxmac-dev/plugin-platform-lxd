@@ -1,4 +1,5 @@
-"""Liminal's services on Incus and LXD (0.4.0): the two mechanisms behind liminal-libs 1.93.0's ContainerHost
+"""Liminal's services on Incus and LXD (0.4.0; 0.4.1 on liminal-libs 1.95.0's hooks): the two mechanisms behind
+liminal-libs 1.93.0's ContainerHost
 (service-containers-design §4.4 and §4.5, the networking design's §5.6 and §5.7, decision 15 a and N25 a).
 
 - **`incus-oci`** (`IncusRuntime`), where the daemon lists the API extension `instance_oci` and the host has skopeo
@@ -9,13 +10,19 @@
   port, its own Liminal bridge per segment (`lim-` and 11 hex characters: a bridge's name is an interface's, 15 at
   most) with the subnet the firewall hands out, each part's address pinned by its NIC's `ipv4.address`. An update's
   backup is a snapshot of each custom volume (`liminal-<stamp>`, the last two kept beside the platform's two backup
-  folders), its folder holding a record of it.
+  folders): since 0.4.1 its kind is "snapshot" (liminal-libs 1.95.0's `backup_kind`), its name kept by the base in
+  `<volume>.snapshot.json`, which a rollback hands back; no tar is needed.
 - **`lxd-docker`** (`OciDocker`), for Canonical LXD, an Incus without OCI support, or a host without skopeo or umoci:
   Docker inside one system container, `liminal-oci` (set up on your approval, as a job on this plugin's page), driven
   exactly as the library's `DockerRuntime` drives an engine, through `incus exec liminal-oci -- docker ...` (LXD's
   `lxc exec`). Values cross on standard input into the docker command's environment there, never on a command line;
   each service volume is a custom volume attached to liminal-oci at `/srv/liminal/<volume>` and bound into the
-  container; each published port a proxy device from this machine's port to liminal-oci's own.
+  container; each published port a proxy device from this machine's port to liminal-oci's own. Since 0.4.1 its
+  networks sit behind liminal-oci's own address on Incus' bridge (`network_want`'s `behind`: the firewall routes them
+  through it), and liminal-oci is listed among its segments as a found member of that bridge (Incus addresses it).
+
+Since 0.4.1 each volume is made for its spec (`make_volume_for`: `initial.uid`/`initial.gid` from the volume's owner),
+and each runtime says who can read a secret it is handed (`kept_secret_words`).
 
 Every command goes through the runner the plugin hands in, `runner(argv, timeout, stdin=None, env=None, binary=False,
 out=None) -> (code, out, err)`, root's prefix (`sudo -n --`) already in `argv` where the platform needs it. The real
@@ -252,7 +259,6 @@ class IncusRuntime(Runtime):
         self.pool, self.arch, self.version = str(pool), str(arch or "amd64"), str(version or "")
         self.lan_path, self.lan_words = lan
         self.where_data = where_data or f"in custom volumes of the storage pool {pool}"
-        self.owners: dict[str, int | None] = {}  # a volume's owner inside, from the spec a plan rests on (facts)
 
     # -- the runner ----------------------------------------------------------------------------------------------------
     def run(self, *args, timeout: float = READ_S, check: bool = True, stdin: bytes | None = None, binary: bool = False):
@@ -372,9 +378,6 @@ class IncusRuntime(Runtime):
         return out
 
     def facts(self, spec: ServiceSpec | None, sid: str) -> dict:
-        if spec is not None:
-            for v in spec.volumes():
-                self.owners[C.volume_name(sid, v.name)] = v.owner
         images = {p.image.digest: self.has_image(p.image) for p in (spec.parts if spec else ())}
         containers = {}
         for r in self.hosted():
@@ -474,6 +477,11 @@ class IncusRuntime(Runtime):
         return pin.digest  # asked for by its digest: skopeo checks the manifest against it as it copies
 
     def make_volume(self, name: str, labels: Mapping) -> bool:
+        return self.make_volume_for(name, labels, None)
+
+    def make_volume_for(self, name: str, labels: Mapping, volume: C.Volume | None) -> bool:
+        """0.4.1 (liminal-libs 1.95.0): the custom volume made for the spec's volume, owned inside by its owner uid
+        (initial.uid, initial.gid), or found from before (the same service's alone)."""
         found = next((v for v in self._custom() if v.get("name") == name), None)
         if found is not None:
             had = dict(found.get("config") or {}).get("user.liminal.service", "")
@@ -481,7 +489,7 @@ class IncusRuntime(Runtime):
                 raise Refusal(f"a volume named {name} is in {self.pool} and is not {labels.get('liminal.service')}'s: "
                               "nothing is made over it")
             return False
-        owner = self.owners.get(name)
+        owner = volume.owner if volume is not None else None
         extra = [f"initial.uid={owner}", f"initial.gid={owner}"] if owner is not None else []
         self.run("storage", "volume", "create", self.pool, name, *[f"{k}={v}" for k, v in user_keys(labels).items()],
                  *extra, timeout=CHANGE_S)
@@ -579,29 +587,50 @@ class IncusRuntime(Runtime):
         names = [str(s.get("name") or "").rsplit("/", 1)[-1] for s in got or [] if isinstance(s, dict)]
         return sorted(n for n in names if n.startswith(SNAPSHOT))
 
-    def backup(self, volume: str, pinned: str, into: Path, line, cancelled) -> int:
-        """A snapshot of the custom volume (cheap on zfs and btrfs, a whole copy on dir), its record written to `into`
-        for the rollback; the volume's older snapshots of Liminal's past the last BACKUPS_KEPT deleted."""
+    def backup_kind(self, part) -> str:
+        """0.4.1 (liminal-libs 1.95.0): an update's backup is Incus' own snapshot of each custom volume, whatever the
+        image holds (no tar needed)."""
+        return "snapshot"
+
+    def backup(self, volume: str, pinned: str, into: Path, line, cancelled) -> str:
+        """A snapshot of the custom volume (cheap on zfs and btrfs, a whole copy on dir), named after the backup
+        folder's stamp: its name answered (0.4.1), which the base keeps in <volume>.snapshot.json for the rollback; the
+        volume's older snapshots of Liminal's past the last BACKUPS_KEPT deleted. Nothing is written to `into`."""
         snap = SNAPSHOT + Path(into).parent.name
         self.run("storage", "volume", "snapshot", "create", self.pool, volume, snap, timeout=BACKUP_S)
-        record = json.dumps({"kind": "incus-snapshot", "pool": self.pool, "volume": volume, "snapshot": snap},
-                            sort_keys=True).encode("utf-8")
-        Path(into).write_bytes(record)
         line(f"{volume}: the snapshot {snap} taken in {self.pool}")
         for old in self._snapshots(volume)[:-C.BACKUPS_KEPT]:
             self.run("storage", "volume", "snapshot", "delete", self.pool, volume, old, timeout=CHANGE_S)
             line(f"{volume}: the older snapshot {old} deleted")
-        return len(record)
+        return snap
 
-    def restore(self, volume: str, pinned: str, source: Path, line, cancelled) -> int:
+    def restore(self, volume: str, pinned: str, source: Path, line, cancelled) -> str:
+        """The snapshot a backup's record names put back: the base's <volume>.snapshot.json (0.4.1), or a 0.4.0 backup's
+        own record (kind incus-snapshot), each of this volume alone and of a snapshot of Liminal's."""
         try:
             record = json.loads(Path(source).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise Refusal(f"{source} is no record of a snapshot of {volume}") from None
-        if record.get("kind") != "incus-snapshot" or record.get("volume") != volume or record.get("pool") != self.pool:
+        if not isinstance(record, dict):
+            raise Refusal(f"{source} is no record of a snapshot of {volume}")
+        if record.get("kind") == "snapshot":
+            snap = str(record.get("said") or "")
+        elif record.get("kind") == "incus-snapshot" and record.get("pool") == self.pool:
+            snap = str(record.get("snapshot") or "")
+        else:
             raise Refusal(f"{source} records another volume's snapshot")
-        self.run("storage", "volume", "snapshot", "restore", self.pool, volume, str(record["snapshot"]), timeout=BACKUP_S)
-        return 0
+        if record.get("volume") != volume:
+            raise Refusal(f"{source} records another volume's snapshot")
+        if not snap.startswith(SNAPSHOT) or not re.fullmatch(r"[A-Za-z0-9._-]{1,63}", snap):
+            raise Refusal(f"{source} names no snapshot of Liminal's ({snap[:40]!r})")
+        self.run("storage", "volume", "snapshot", "restore", self.pool, volume, snap, timeout=BACKUP_S)
+        return f"the snapshot {snap}"
+
+    def kept_secret_words(self, spec: ServiceSpec) -> str:
+        """0.4.1 (liminal-libs 1.95.0): who can read a secret an instance is handed."""
+        names = ", ".join(f"{s.variable} (as {s.env})" for s in spec.secrets())
+        return (f"{names}: handed to the instance in its configuration, on standard input; the Incus daemon keeps it in "
+                "its database, which anyone in incus-admin (or root) can read (incus config show)")
 
 
 # -- lxd-docker ----------------------------------------------------------------------------------------------------------
@@ -613,11 +642,13 @@ class OciDocker(DockerRuntime):
     mechanism = "lxd-docker"
 
     def __init__(self, client, runner: Callable, streamer: Callable | None = None, *, pool: str, version: str = "",
-                 arch: str = "amd64", lan=("direct", ""), where_data: str = ""):
+                 arch: str = "amd64", lan=("direct", ""), where_data: str = "", initial: bool = False):
         self.client = [str(a) for a in client]
         self._raw = runner
         self.pool = str(pool)
-        self.owners: dict[str, int | None] = {}
+        # 0.4.1: whether the daemon gives a custom volume its owner as it makes it (the API extension
+        # storage_volumes_initial_values: initial.uid); otherwise the volume is chowned once inside liminal-oci
+        self.initial = bool(initial)
         DockerRuntime.__init__(self, [*self.client, "exec", OCI, EXEC_MODE, "--", "docker"], through_stdin(runner),
                                streamer, version=version, arch=arch, wsl=False, trusted=("eth0",), lan=lan,
                                where_data=where_data or f"in custom volumes of the storage pool {pool}, bound into {OCI}")
@@ -647,13 +678,13 @@ class OciDocker(DockerRuntime):
             parts["volumes"] = Aspect("exact", self.where_data)
         return Fit.judged(parts)
 
-    def facts(self, spec: ServiceSpec | None, sid: str) -> dict:
-        if spec is not None:
-            for v in spec.volumes():
-                self.owners[C.volume_name(sid, v.name)] = v.owner
-        return DockerRuntime.facts(self, spec, sid)
-
     def make_volume(self, name: str, labels: Mapping) -> bool:
+        return self.make_volume_for(name, labels, None)
+
+    def make_volume_for(self, name: str, labels: Mapping, volume: C.Volume | None) -> bool:
+        """0.4.1 (liminal-libs 1.95.0): the custom volume made for the spec's volume (initial.uid/initial.gid from its
+        owner, where the daemon takes them), attached to liminal-oci and bound into a Docker volume; one found from
+        before, or made where the daemon takes no initial owner, is chowned once inside."""
         found = self._inspect("volume", name)
         if found:
             had = (found[0].get("Labels") or {}).get("liminal.service", "")
@@ -661,16 +692,19 @@ class OciDocker(DockerRuntime):
                 raise Refusal(f"a volume named {name} is there and is not {labels.get('liminal.service')}'s: "
                               "nothing is made over it")
             return False
+        owner = volume.owner if volume is not None else None
+        owned = False
         got = _sorted_json(self.incus("storage", "volume", "list", self.pool, "--format", "json")[1])
         if not any(isinstance(v, dict) and v.get("name") == name and v.get("type") == "custom" for v in got or []):
+            extra = [f"initial.uid={owner}", f"initial.gid={owner}"] if owner is not None and self.initial else []
             self.incus("storage", "volume", "create", self.pool, name,
-                       *[f"{k}={v}" for k, v in user_keys(labels).items()], timeout=CHANGE_S)
+                       *[f"{k}={v}" for k, v in user_keys(labels).items()], *extra, timeout=CHANGE_S)
+            owned = bool(extra)
         inside = f"{OCI_MOUNTS}/{name}"
         if name not in self._oci_devices():
             self.incus("config", "device", "add", OCI, name, "disk", f"pool={self.pool}", f"source={name}",
                        f"path={inside}", timeout=CHANGE_S)
-        owner = self.owners.get(name)
-        if owner is not None:  # made writable for the image's user once, inside (a bound volume keeps its own owner)
+        if owner is not None and not owned:  # made writable for the image's user once, inside
             self.incus("exec", OCI, EXEC_MODE, "--", "chown", f"{int(owner)}:{int(owner)}", inside, timeout=CHANGE_S)
         args = ["volume", "create", "--driver", "local", "--opt", "type=none", "--opt", "o=bind", "--opt",
                 f"device={inside}"]
@@ -708,9 +742,52 @@ class OciDocker(DockerRuntime):
                     self.incus("config", "device", "add", OCI, dev, "proxy", f"listen={want}",
                                f"connect={p.protocol}:127.0.0.1:{p.host}", timeout=CHANGE_S)
 
+    def oci_nic(self) -> dict:
+        """liminal-oci's own place on Incus' bridge, as the daemon says it now: {"address", "bridge", "mac"} ("" each
+        when it is not said: liminal-oci stopped, or no IPv4 address yet). Incus addresses it (its own DHCP)."""
+        got = _sorted_json(self.incus("list", "--format", "json")[1])
+        inst = next((i for i in got or [] if isinstance(i, dict) and i.get("name") == OCI), None) or {}
+        devices = dict(inst.get("expanded_devices") or inst.get("devices") or {})
+        nic, d = next(((k, v) for k, v in devices.items() if isinstance(v, dict) and v.get("type") == "nic"), ("", {}))
+        state = ((inst.get("state") or {}).get("network") or {}).get(str(d.get("name") or nic) if nic else "") or {}
+        address = next((str(a.get("address") or "") for a in state.get("addresses") or []
+                        if isinstance(a, dict) and a.get("family") == "inet" and a.get("scope") == "global"), "")
+        return {"address": address, "bridge": str(d.get("network") or ""), "mac": str(state.get("hwaddr") or "")}
+
+    def network_want(self, spec: ServiceSpec | None, sid: str) -> dict:
+        """0.4.1 (liminal-libs 1.95.0, L2): a service's Docker network sits behind liminal-oci's own address on Incus'
+        bridge: the firewall's route to it goes through that address. Nothing said while it has none."""
+        address = self.oci_nic()["address"]
+        return {"behind": address} if address else {}
+
+    def kept_secret_words(self, spec: ServiceSpec) -> str:
+        """0.4.1 (liminal-libs 1.95.0): who can read a secret a container inside liminal-oci is handed."""
+        names = ", ".join(f"{s.variable} (as {s.env})" for s in spec.secrets())
+        return (f"{names}: handed to the container inside {OCI} by environment alone, crossing into it on standard "
+                f"input; Docker there keeps it in the container's settings, which anyone who may run commands in {OCI} "
+                "can read (docker inspect)")
+
     def segments(self) -> list[dict]:
-        """Docker's networks inside liminal-oci, said as nested (the networking design's §5.7)."""
-        return [{**s, "kind": "nested", "names": "docker"} for s in DockerRuntime.segments(self)]
+        """Docker's networks inside liminal-oci, said as nested (the networking design's §5.7); and since 0.4.1 (L6)
+        Incus' bridge liminal-oci sits on, liminal-oci a found member of it (no service's: sid "", Incus addresses it)."""
+        rows = [{**s, "kind": "nested", "names": "docker"} for s in DockerRuntime.segments(self)]
+        nic = self.oci_nic()
+        if not nic["bridge"]:
+            return rows
+        nets = _sorted_json(self.incus("network", "list", "--format", "json")[1])
+        n = next((x for x in nets or [] if isinstance(x, dict) and x.get("name") == nic["bridge"]), None) or {}
+        try:
+            iface = ipaddress.ip_interface(str(dict(n.get("config") or {}).get("ipv4.address") or ""))
+            subnet, gateway = str(iface.network), str(iface.ip)
+        except ValueError:
+            subnet, gateway = "", ""
+        rows.append({"segment": nic["bridge"], "network": nic["bridge"], "kind": "incus-bridge", "bridge": nic["bridge"],
+                     "sid": "", "platform": "", "shared": True, "subnets": [subnet] if subnet else [],
+                     "gateways": [gateway] if gateway else [], "trusted": [], "assigns": "incus",
+                     "names": "dnsmasq:incus",
+                     "members": [{"sid": "", "part": "", "container": OCI, "mac": nic["mac"], "ipv4": nic["address"],
+                                  "assigned": "incus"}]})
+        return rows
 
     def remove(self, container: str) -> None:
         """The container removed (never a volume); once no container of its service is left, its proxy devices go."""

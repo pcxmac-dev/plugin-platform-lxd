@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.1 (2026-11-25)
+
+On liminal-libs 1.95.0's hooks (SERVICE-INTERFACE.md §9.2); needs liminal-libs>=1.95.0.
+- **The stack as every container plugin names it** (`containers.stack_of`, decided 2026-11-25): "wsl" inside a WSL
+  distribution (every Linux there shares WSL 2's one VM; the Linux platform's firewall-linux there owns "wsl"),
+  "linux" on a Linux machine of its own, in place of a fixed "linux".
+- **Volumes made for their spec** (`make_volume_for`) in both runtimes: `initial.uid`/`initial.gid` from the volume's
+  owner. Inside liminal-oci the custom volume takes them where the daemon lists `storage_volumes_initial_values`; one
+  found from before, or on a daemon without it, is chowned once inside as before. The runtimes keep no owners of
+  their own any more.
+- **Snapshots as the library's backup kind**: incus-oci answers `backup_kind` "snapshot", so an image without tar
+  needs no "no backup" accept; `backup` answers the snapshot's name (`liminal-<stamp>`), which the base keeps in
+  `<volume>.snapshot.json`, and `restore` reads it back (a 0.4.0 backup's own record still read); no "N bytes" words.
+- **Who can read a secret**: each runtime's `kept_secret_words` in place of the plugin's `_kept_secret_words`.
+- **lxd-docker's networks behind liminal-oci**: `network_want` answers `{"behind": <liminal-oci's address on Incus'
+  bridge>}`, so the firewall routes its bridges through liminal-oci; `segments()` lists that bridge with liminal-oci a
+  found member (sid "", assigned "incus").
+- Not changed: its page reads no targets of its own for its status (the base's reads them), so there is nothing to
+  hand `service_status(targets=...)`.
+
 ## 0.4.0 (2026-11-25)
 
 LXC / LXD hosts Liminal's services: liminal-libs 1.93.0's one "run a service" interface (`ContainerHost`) on the Incus
