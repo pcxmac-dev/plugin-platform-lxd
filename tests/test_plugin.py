@@ -20,6 +20,9 @@ from plugin_platform_lxd import MACHINE, LxdError, LxdPlugin, Refusal, inventory
 from plugin_platform_lxd.__main__ import main
 
 RECORDED = Path(__file__).parent / "recorded"
+# the library's root prefix (liminal-libs 1.80.0 machines/linux.py Shell.prefix: `sudo -n --`, so a command beginning
+# with a dash is never read as sudo's option); until then `sudo -n`
+SUDO = ["sudo", "-n", "--"]
 INCUS = {"instances": "incus-list.json", "images": "incus-image-list.json", "profiles": "incus-profile-list.json",
          "storage": "incus-storage-list.json", "networks": "incus-network-list.json"}
 OS = {
@@ -122,8 +125,8 @@ class FakeLinux:
 
     def __call__(self, args, timeout):
         self.calls.append(list(args))
-        root = args[:2] == ["sudo", "-n"]
-        cmd = args[2:] if root else args
+        root = args[:3] == SUDO
+        cmd = args[3:] if root else args
         if root and not self.sudo:
             return 1, "", "sudo: a password is required\n"
         if cmd == ["true"]:
@@ -366,7 +369,7 @@ def test_a_stopped_daemon_is_started_only_when_asked_under_systemd_openrc_and_al
     service = next(f for f in st["forms"] if f["id"] == "service")
     assert service["confirm"]["words"].startswith("systemctl start {unit}, as root")
     assert p.service("incus.service", "start")["said"] == "incus.service started (systemctl start incus.service)"
-    assert fake.calls[-1] == ["sudo", "-n", "systemctl", "start", "incus.service"]  # root through sudo -n
+    assert fake.calls[-1] == [*SUDO, "systemctl", "start", "incus.service"]  # root through sudo -n
     for bad, words in ((("incus.service", "stop"), "never stopped"), (("sshd.service", "start"), "not one of Incus's services"),
                        (("lxd.service", "start"), "not one of Incus's services")):
         with pytest.raises(Refusal, match=words):
@@ -400,14 +403,14 @@ def test_the_rights_root_sudo_the_incus_group_and_none(monkeypatch):
     sudo = FakeLinux(groups=("ciara", "wheel"))
     st = plugin(sudo).status()
     assert st["valid"] and st["rights"] == "ciara is not in incus-admin: commands as root through sudo -n"
-    assert sudo.calls[1] == ["sudo", "-n", "true"] and sudo.reads[0].startswith("sudo -n sh -c")
+    assert sudo.calls[1] == [*SUDO, "true"] and sudo.reads[0].startswith("sudo -n sh -c")
     kept = FakeLinux(groups=("ciara", "wheel"), sudo=False)
     again = plugin(kept)
     again.status()
     again.status()
-    assert kept.calls.count(["sudo", "-n", "true"]) == 1  # sudo's answer kept: a refusal is not logged by sudo every read
+    assert kept.calls.count([*SUDO, "true"]) == 1  # sudo's answer kept: a refusal is not logged by sudo every read
     plugin(sudo).power("web", "stop")
-    assert sudo.calls[-1] == ["sudo", "-n", "/usr/bin/incus", "stop", "web", "--timeout", "60"]
+    assert sudo.calls[-1] == [*SUDO, "/usr/bin/incus", "stop", "web", "--timeout", "60"]
     none = FakeLinux(groups=("ciara", "wheel"), sudo=False)
     st = plugin(none).status()
     assert (st["present"], st["valid"]) == (True, False) and none.reads == []
@@ -503,7 +506,7 @@ def test_parsing_the_answers():
     real = refused.__call__
 
     def no_sh(args, timeout):  # sudo -n lets true run, not sh: the read is refused, and said
-        if args[:4] == ["sudo", "-n", "sh", "-c"]:
+        if args[:5] == [*SUDO, "sh", "-c"]:
             return 1, "", "Sorry, user ciara is not allowed to execute '/bin/sh -c ...' as root on box.\n"
         return real(args, timeout)
     st = LxdPlugin(shell=Shell("local", runner=no_sh), native="").status()

@@ -16,7 +16,7 @@ from liminal_libs.sources import apis as A
 from liminal_libs.sources.conformance import problems
 from plugin_platform_lxd import apis as cards
 from plugin_platform_lxd import inventory, system
-from test_plugin import FakeLinux, plugin
+from test_plugin import SUDO, FakeLinux, plugin
 
 TWO = {cards.INCUS: {"image", "profile", "storage", "network", "snapshot", "config", "cluster", "project"},
        cards.LXD: {"image", "profile", "storage", "network", "config", "cluster", "project"}}
@@ -27,8 +27,8 @@ def shape(api: str, words) -> str:
     """A command by what it does, its instance, snapshot, unit, project and timeout left out: snapshot create, lxc-stop -r,
     systemctl start, rc-service start."""
     words = list(words)
-    if words[:2] == ["sudo", "-n"] and words[2:] != ["true"]:
-        words = words[2:]  # root through sudo -n: the command itself
+    if words[:3] == SUDO:  # root through sudo -n: the command itself; sudo's check by the card's words, `sudo -n true`
+        words = words[3:] if words[3:] != ["true"] else ["sudo", "-n", "true"]
     tool = words[0].rsplit("/", 1)[-1]
     rest = words[1:]
     if api in TWO:
@@ -143,7 +143,7 @@ def test_the_services_card_names_what_is_asked_of_the_machine(monkeypatch):
     outsider = FakeLinux(groups=("ciara", "wheel"))  # not in incus-admin: root's commands through sudo -n, asked first
     plugin(outsider).status()
     ran = {shape(cards.SERVICES, c) for f in (stopped, gentoo, devuan, outsider) for c in f.calls
-           if c[:2] != ["sh", "-c"] and c[2:4] != ["sh", "-c"]}
+           if c[:2] != ["sh", "-c"] and c[3:5] != ["sh", "-c"]}  # sudo -n -- before it when through sudo
     for words, written in (("systemctl show", "systemctl show -p Id,LoadState,ActiveState,SubState,UnitFileState,Description"),
                            ("service status", 'service "$n" status'), ("pgrep", 'pgrep -x "$d"'), ("id", "id -nG")):
         assert written in system.PROBE, written  # the probe's, as its script writes them
