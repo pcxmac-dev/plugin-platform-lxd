@@ -24,26 +24,40 @@ status says how to give the rights. Classic LXC's containers are root's: root, o
     python -m plugin_platform_lxd status [--wake] | wake | start|stop|restart NAME [--project P]
         | snapshot NAME [SNAPSHOT] [--project P] | restore NAME SNAPSHOT [--project P] [--yes]
         | delete NAME [--project P] [--yes] | service UNIT start | run -- ARGS...
+
+Since 0.4.0 it hosts Liminal's services (liminal-libs 1.93.0's ContainerHost, the one "run a service" interface;
+service-containers-design §4.4, the networking design's §5.6 and §5.7): Incus' own OCI instances where the daemon has
+`instance_oci` and the host skopeo and umoci (`incus-oci`), otherwise Docker inside one `liminal-oci` system container
+(`lxd-docker`, decision 15 a), set up on your approval as a job on its page; each service on a Liminal bridge of its own
+with the subnet the firewall plugin hands out (N25 a). A service plugin's plan is in this plugin's words and approved on
+its page; the grant once per service plugin and target; `boot.autostart=false` said outright; nothing started while its
+daemon is idle or stopped, or liminal-oci is; its "page" services stopped with the platform and when it is turned off.
+Classic LXC is not offered (no proxy devices or custom volumes of its own); on Windows and macOS it is "not for this
+machine", asking nothing.
 """
 from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
 
 from liminal_libs.machines import linux
+from liminal_libs.machines.containerhost import ContainerHost, Outside
+from liminal_libs.machines.containers import Target
 from liminal_libs.machines.linux import Shell
-from liminal_libs.machines.plugin import CommandError, MachinePlugin
+from liminal_libs.machines.plugin import CommandError
 
 from . import apis as cards
 from . import inventory as inv_mod
+from . import services as svcs
 from .inventory import Inventory, parse as parse_read, parse_lxc, read_script
 from .system import (PROBE, PROCESS, SOCKETS, Probe, distribution, init_words, install_words, looks_like_version,
                      parse as parse_probe)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 SUDO_S = 300.0  # sudo -n's answer kept this long: a refusal is logged by sudo each time it is asked
 NAMES = {"incus": "Incus", "lxd": "LXD", "lxc": "LXC"}
 TOOL = {"incus": "incus", "lxd": "lxc", "lxc": "lxc-ls"}
@@ -58,6 +72,14 @@ SERVICE_S = 120.0
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 UNIT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}$")
 DENIED = ("permission denied", "needed permissions", "not authorized", "a password is required", "forbidden")
+CONTEXT_S = 5.0  # one look serves a page's status and the services' read made with it
+LXC_WORDS = ("classic LXC is not offered for Liminal's services: it has no proxy devices or custom volumes of its own "
+             "(Incus or LXD is)")
+LINUX_LAN = ("a proxy device listens on every address of this machine (a socket of its own: firewall-linux decides who "
+             "reaches it)")
+WSL_LAN = ("a proxy device listens inside this WSL distribution: Windows reaches it at 127.0.0.1 through WSL's relay; "
+           "your network does not (WSL runs in NAT mode): the Windows firewall's Expose… brings a port proxy for it "
+           "(decision 2)")
 
 
 class LxdError(CommandError):
@@ -281,8 +303,9 @@ def daemon_words(ctx: Context) -> str:
     return "not known: none of its services was found here, so it is read directly"
 
 
-class LxdPlugin(MachinePlugin):
-    """Incus, LXD or classic LXC on the Linux the platform runs on: read, and changed only when asked."""
+class LxdPlugin(ContainerHost):
+    """Incus, LXD or classic LXC on the Linux the platform runs on: read, and changed only when asked; and since 0.4.0
+    the one "run a service" interface (liminal-libs 1.93.0's ContainerHost) on Incus or LXD there."""
 
     name = "lxd"
     title = "LXC / LXD"
@@ -296,16 +319,32 @@ class LxdPlugin(MachinePlugin):
     order = 705  # the machine's own instances: WSL's on Windows (700-702), LXC / LXD and libvirt on Linux
     ICON = "lxd"  # LXD's logo, a cube of small cubes (icons.js, liminal-libs 1.33.0)
     SECTION = "virtualization"  # drawn under the platform's Virtualization plugins (liminal-platform 0.26.0)
-    HOOKS = (*MachinePlugin.HOOKS, "power", "snapshot", "restore", "delete", "service", "wake")
+    RUNTIME = "lxd"
+    HOOKS = (*ContainerHost.HOOKS, "power", "snapshot", "restore", "delete", "service", "wake", "setup_oci")
+    # its own changes, from its page alone (0.4.0; the networking design's §8.1, N1 a): no other plugin asks them
+    PAGE_ONLY_HOOKS = ("power", "snapshot", "restore", "delete", "service", "wake", "setup_oci")
+    JOB_HOOKS = ("setup_oci",)  # liminal-oci's setup runs as a job, its lines followed on the page
+    CANCEL_HOOKS = ("setup_oci",)  # and may be asked to stop (its Cancel, the plugin turned off, the platform's stop)
 
-    def __init__(self, shell: Shell | None = None, runner=None, native: str | None = None):
+    def __init__(self, shell: Shell | None = None, runner=None, native: str | None = None, service_runner=None,
+                 streamer=None, outside: Outside | None = None):
         self._shell = shell
         self._runner = runner
+        # (argv, timeout, stdin=, env=, binary=, out=) -> (code, out, err): a service's commands (0.4.0), services.service_run
+        # unless given; a test that gives only a shell or a runner has its service commands refused, never run for real
+        self._service_runner = service_runner
+        self._streamer = streamer  # (argv, timeout, line, stop) -> (code, last lines): services.stream unless given
+        self._seen_ctx: tuple[float, Context] | None = None
+        self._svc_seen: dict[str, dict] = {}  # a target -> what its services' read found (mechanism, client, pool ...)
+        self._full = False  # whether the targets kept were read with the services' read
+        self._want_once = False  # the next targets read with the services' read (a guard's)
+        self._stopping = threading.Event()
         self._native = native  # a test's word for why_not_native(): "" on a native Linux machine, else why not
         self._woken = False  # an idle daemon read once asked (Read now), until the platform lets the plugin go
         self._sudo: tuple[float, bool] | None = None  # (when, whether sudo -n ran without a password)
         # what the last look and read said (api_facts, plugin API 2.2): kept in one dict its copies share, asked nothing
         self._learned: dict = {}
+        ContainerHost.__init__(self, outside or Outside(holders=self._port_holders))
 
     def not_for_here(self) -> str:
         """Why the machine the platform runs on is not a native Linux one, in words ("" when it is)."""
@@ -324,10 +363,25 @@ class LxdPlugin(MachinePlugin):
         return sh
 
     def detach(self) -> None:
-        """Let go by the platform: an idle daemon is no longer read until asked again; what was learned goes too."""
-        self._woken = False
-        self._learned.clear()
-        super().detach()
+        """Let go by the platform: (0.4.0) plans forgotten, and when you turned it off its works cancelled and its
+        "page" services stopped (ContainerHost); then an idle daemon is no longer read until asked again, and what was
+        learned goes too."""
+        self._stopping.set()
+        try:
+            ContainerHost.detach(self)
+        finally:
+            self._woken = False
+            self._learned.clear()
+            self._seen_ctx = None
+            self._svc_seen.clear()
+            self._full = False
+            self._stopping = threading.Event()
+
+    def app_stopping(self) -> None:
+        """The platform stops: liminal-oci's setup ends, every service work is cancelled and joined and every "page"
+        service stopped (ContainerHost)."""
+        self._stopping.set()
+        ContainerHost.app_stopping(self)
 
     def _remember(self, ctx: Context, inv: Inventory | None = None) -> None:
         """What a look (and a read) said, kept for api_facts: no request of its own."""
@@ -338,6 +392,7 @@ class LxdPlugin(MachinePlugin):
                 "daemon": daemon_words(ctx) if ctx.backend else "", "rights": ctx.access.words if ctx.access else "",
                 "sudo": self._sudo}
         if inv is not None:
+            seen["liminal"] = any(i.name.startswith("liminal-") for i in inv.instances)
             seen["read"] = {"instances": len(inv.instances), "running": sum(i.running for i in inv.instances),
                             "snapshots": len(inv.snapshots), "images": len(inv.images), "profiles": len(inv.profiles),
                             "pools": len(inv.pools), "networks": len(inv.networks), "problems": list(inv.problems)}
@@ -390,6 +445,18 @@ class LxdPlugin(MachinePlugin):
         return found
 
     def _context(self) -> Context:
+        ctx = self._look()
+        self._seen_ctx = (time.monotonic(), ctx)
+        return ctx
+
+    def _recent_context(self) -> Context:
+        """The last look when it is CONTEXT_S old at most (a page's status and its services' tables), else a new one."""
+        seen = self._seen_ctx
+        if seen is not None and time.monotonic() - seen[0] < CONTEXT_S:
+            return seen[1]
+        return self._context()
+
+    def _look(self) -> Context:
         sh = self.shell
         p = self._probe(sh)
         found = backends(p)
@@ -451,6 +518,15 @@ class LxdPlugin(MachinePlugin):
     def status(self) -> dict:
         """What the page shows; inside a WSL distribution its tables end with what WSL changes (under_wsl)."""
         st = self._status()
+        seen = self._seen_ctx[1] if self._seen_ctx else None
+        if st.get("present") and st.get("applies") is not False and seen is not None and seen.backend in ("incus", "lxd"):
+            services = self.service_status()  # 0.4.0: Liminal's services, the plans waiting, the service plugins, kept data
+            st["tables"] = [*st.get("tables", []), *(services.get("tables") or [])]
+            st["forms"] = [*st.get("forms", []), *(services.get("forms") or [])]
+            if self._oci_missing():
+                st["actions"] = [*st.get("actions", []), {"form": "setup_oci", "title": "Set up for services…",
+                                                          "note": f"{svcs.OCI}: Docker inside one system container, "
+                                                                  "for Liminal's services (decision 15)"}]
         table = None if st.get("applies") is False else under_wsl()
         if table is not None:
             st["tables"] = [*st.get("tables", []), table]
@@ -693,7 +769,18 @@ class LxdPlugin(MachinePlugin):
                             "words": (f"The {ctx.title} daemon is idle: {ctx.daemon_by or 'its socket'} listens, and connecting to it starts "
                                       "the daemon. Read now connects, and the plugin reads it from then on, until the platform lets it go."),
                             "yes": "Read now"}}
-        return [power, snapshot, restore, delete, service, wake]
+        setup = {"id": "setup_oci", "hook": "setup_oci", "title": f"Set up {svcs.OCI} for Liminal's services",
+                 "fields": [{"name": "accept_download", "type": "accept", "title": "Download and install it?",
+                             "yes": "Download and install",
+                             "words": (f"{svcs.OCI} is made from {svcs.OCI_IMAGE.get(ctx.backend or 'incus', '')} and "
+                                       f"Docker's packages are installed in it from download.docker.com: "
+                                       f"{svcs.OCI_SIZES}.")}],
+                 "confirm": {"title": f"Set up {svcs.OCI}?",
+                             "words": (f"One system container, {svcs.OCI}, with nesting on and boot.autostart=false, "
+                                       "and Docker inside it: Liminal's services run there, each on its own network. "
+                                       "Nothing else on this machine changes; Delete… removes it."),
+                             "yes": "Set it up"}}
+        return [power, snapshot, restore, delete, service, wake, *([setup] if not lxc else [])]
 
     # -- the hooks: changes, each asked ---------------------------------------------------------------------------
     def _project_args(self, ctx: Context, project: str | None) -> list[str]:
@@ -746,6 +833,7 @@ class LxdPlugin(MachinePlugin):
         name, project = checked(name, "an instance's name"), project_of(project)
         snap = checked(snapshot, "a snapshot's name")
         ctx = self._ready()
+        self._guard(ctx, name, "restore")
         inst = self._find(ctx, name, project)
         if not any(s.name == snap for s in inst.snapshots):
             raise Refusal(f"{name} has no snapshot named {snap}: {', '.join(s.name for s in inst.snapshots) or 'it has none'}")
@@ -766,6 +854,7 @@ class LxdPlugin(MachinePlugin):
         """A stopped instance deleted with its snapshots: for good, so asked twice (the project last, as restore's)."""
         name, project = checked(name, "an instance's name"), project_of(project)
         ctx = self._ready()
+        self._guard(ctx, name, "delete")
         inst = self._find(ctx, name, project)
         if inst.running:
             raise Refusal(f"{name} is {inst.state}: stop it first, then delete it")
@@ -822,6 +911,263 @@ class LxdPlugin(MachinePlugin):
                 raise Refusal("classic LXC's own tools only: lxc-ls, lxc-info, lxc-start, ...")
             return self._run(ctx, *command)
         return self._run(ctx, ctx.client, *command)
+
+
+    # -- the one "run a service" interface (0.4.0, liminal-libs 1.93.0's ContainerHost) ---------------------------------
+    def _guard(self, ctx: Context, name: str, what: str) -> None:
+        """A service's instance is changed on its own plugin's page, and liminal-oci is not deleted or restored while
+        it holds a service of Liminal's (or while that cannot be read)."""
+        if name != svcs.OCI and not name.startswith("liminal-"):
+            return
+        try:
+            ready, hosted = self._hosted_here()
+        except Exception as e:  # noqa: BLE001 - not read: nothing is done to what may be a service's
+            raise Refusal(f"{name} may hold Liminal's services, and they cannot be read now ({e}): nothing done") from None
+        if name == svcs.OCI and not ready:
+            raise Refusal(f"{svcs.OCI} may hold Liminal's services, and they cannot be read while it does not answer: "
+                          f"start it first, or {what} it yourself ({ctx.client} {what} {svcs.OCI})")
+        if name == svcs.OCI:
+            if hosted:
+                raise Refusal(f"{svcs.OCI} holds Liminal's services ({', '.join(sorted(hosted))}): remove them on their "
+                              f"own pages first (their Remove… keeps their data), then {what} it")
+            return
+        for sid, containers in hosted.items():
+            if name in containers:
+                raise Refusal(f"{name} is the instance of Liminal's service {sid}: {what} it on "
+                              f"{sid.split('/', 1)[0]}'s page (its Remove… keeps its volumes and says what stays)")
+
+    def _hosted_here(self) -> tuple[bool, dict[str, set]]:
+        """Whether this machine's target answers, and Liminal's services on it as its runtime reads them: {sid: its
+        instances or containers}. Read now, with the services' read."""
+        out: dict[str, set] = {}
+        ready = False
+        self._want_once = True
+        for t in self.targets(fresh=True):
+            if not t.ready:
+                continue
+            ready = True
+            for r in self.runtime_of(t).hosted():
+                out.setdefault(str(r.get("sid")), set()).update(str(p.get("container")) for p in r.get("parts") or [])
+        return ready, out
+
+    def _platform_lan(self) -> tuple[str, str, str, str]:
+        """(stack, path, the words of a port opened to your network, whose firewall decides). The stack is always the
+        Linux platform's own (its firewall-linux allocates from the Linux half and routes nothing to a bridge on its own
+        host), inside a WSL distribution too; there a port meets your network through WSL's NAT, which Windows'
+        firewall decides."""
+        said = getattr(linux, "wsl", None)
+        if said is not None and said():
+            return "linux", "wsl-nat", WSL_LAN, "windows"
+        return "linux", "direct", LINUX_LAN, "linux"
+
+    def _read_services(self, ctx: Context) -> dict:
+        """The services' read (one script, with the platform's rights): the server's extensions, the default pool,
+        skopeo and umoci, liminal-oci and the Docker inside it. Asked only of a daemon that runs (or was read now)."""
+        try:
+            return svcs.parse_services(ctx.shell.sh(svcs.services_script(ctx.client), root=ctx.access.as_root,
+                                                    timeout=READ_S))
+        except CommandError as e:
+            return {"problem": str(e)}
+
+    def runtime_targets(self) -> list[Target]:
+        """Its one target, the software this machine drives (incus, lxd; classic LXC is not offered), read with the
+        services' read only once a service plugin asked or a grant, plan or work is held: until then its state comes
+        from the look alone. A look never wakes an idle daemon, nor starts a stopped one or liminal-oci."""
+        wanted = self.service_reads_wanted() or self._want_once
+        self._want_once = False
+        self._full = wanted
+        note = self.not_for_here()
+        stack, path, lan_words, firewall = self._platform_lan() if not note else ("linux", "direct", "", "linux")
+        base = dict(plugin=self.name, system="linux", stack=stack, path=path, lan_words=lan_words, firewall=firewall,
+                    reach="127.0.0.1")
+        if note:  # not for this machine at all: asked nothing
+            return [Target(id="lxd", title="LXC / LXD", mechanism="lxd-docker", here=False, state="not here", why=note,
+                           **base)]
+        try:
+            ctx = self._recent_context()
+        except CommandError as e:
+            return [Target(id="lxd", title="LXC / LXD", mechanism="lxd-docker", state="not answering", why=str(e), **base)]
+        if ctx.backend is None:
+            return [Target(id="lxd", title="LXC / LXD", mechanism="lxd-docker", state="not answering",
+                           why=install_words(ctx.probe), **base)]
+        soft = software(ctx.probe, ctx.backend)
+        guess = "incus-oci" if ctx.backend == "incus" else "lxd-docker"
+        base.update(id=ctx.backend, platform=self._platform(), version=ctx.probe.versions.get(TOOL[ctx.backend], ""))
+        if ctx.backend == "lxc":
+            return [Target(title=soft, mechanism="lxd-docker", state="not answering", why=LXC_WORDS, **base)]
+        if ctx.access.kind in ("none", "restricted"):
+            return [Target(title=soft, mechanism=guess, state="no rights", why=ctx.access.words, **base)]
+        if ctx.daemon == "idle" and not self._woken:
+            return [Target(title=soft, mechanism=guess, state="idle",
+                           why=f"the {ctx.title} daemon is idle ({ctx.daemon_by} listens): Read now… on the LXD page reads "
+                               "it, which starts it; nothing here wakes it", **base)]
+        if ctx.daemon == "stopped":
+            return [Target(title=soft, mechanism=guess, state="stopped",
+                           why=f"the {ctx.title} daemon is stopped ({ctx.daemon_by}): Start… under Daemons on the LXD page "
+                               "starts it; nothing here starts it", **base)]
+        if not wanted:  # its page alone asks: the look says what it can, and no more is read
+            return [Target(title=f"{soft}: its services' mechanism is read once a service plugin asks", mechanism=guess,
+                           **base)]
+        got = self._read_services(ctx)
+        if got.get("problem"):
+            return [Target(title=soft, mechanism=guess, state="not answering", why=got["problem"], **base)]
+        server = got.get("server") or {}
+        env = server.get("environment") or {}
+        arch = svcs.ARCHES.get(str(env.get("kernel_architecture") or ""), str(env.get("kernel_architecture") or "amd64"))
+        version = str(env.get("server_version") or base["version"])
+        base.update(arch=arch, version=version)
+        pool = str(got.get("pool") or "")
+        client = [*ctx.shell.prefix(root=ctx.access.as_root), ctx.client]
+        oci_ok = ctx.backend == "incus" and "instance_oci" in (server.get("api_extensions") or [])
+        missing = sorted({"skopeo", "umoci"} - set(got.get("tools") or ()))
+        if not pool:
+            return [Target(title=soft, mechanism=guess, state="not answering",
+                           why=f"{ctx.title} has no storage pool in its default profile: incus admin init (lxd init) "
+                               "sets one up", **base)]
+        where = f"in custom volumes of {ctx.title}'s storage pool {pool} (Delete its data… or deleting the pool deletes them)"
+        if oci_ok and not missing:
+            self._svc_seen[ctx.backend] = {"mechanism": "incus-oci", "client": client, "pool": pool, "arch": arch,
+                                           "version": version, "lan": (path, lan_words), "where": where}
+            return [Target(title=f"{soft}: its own OCI instances", mechanism="incus-oci", where_data=where, **base)]
+        why_not = ("LXD runs no OCI image itself" if ctx.backend == "lxd" else
+                   f"this Incus lacks instance_oci (Incus 6.3 and later)" if not oci_ok else
+                   f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} not installed for Incus' OCI images")
+        title = f"{soft}: Docker inside {svcs.OCI} ({why_not})"
+        oci = got.get("oci")
+        if oci is None:
+            return [Target(title=title, mechanism="lxd-docker", state="not answering",
+                           why=f"{svcs.OCI} is not set up: Set up for services… on the LXD page makes it, once you "
+                               f"approve ({why_not})", **base)]
+        if str(oci.get("status") or "").lower() != "running":
+            return [Target(title=title, mechanism="lxd-docker", state="stopped",
+                           why=f"{svcs.OCI} is {str(oci.get('status') or 'stopped').lower()}: Start… beside it on the "
+                               "LXD page starts it; nothing here starts it", **base)]
+        docker = got.get("docker")
+        if not isinstance(docker, dict):
+            return [Target(title=title, mechanism="lxd-docker", state="not answering",
+                           why=f"Docker inside {svcs.OCI} does not answer: {got.get('docker_error') or 'not read'}", **base)]
+        dversion = str((docker.get("Server") or {}).get("Version") or "")
+        where = f"in custom volumes of {ctx.title}'s storage pool {pool}, bound into {svcs.OCI}"
+        self._svc_seen[ctx.backend] = {"mechanism": "lxd-docker", "client": client, "pool": pool, "arch": arch,
+                                       "version": dversion, "lan": (path, lan_words), "where": where}
+        base["version"] = dversion
+        return [Target(title=f"{title}, Docker {dversion}", mechanism="lxd-docker", where_data=where, **base)]
+
+    def targets(self, fresh: bool = False) -> list[Target]:
+        """The base's, read again with the services' read once that is wanted and what is kept was read without it."""
+        if not fresh and not self._full and self.service_reads_wanted():
+            fresh = True
+        return ContainerHost.targets(self, fresh)
+
+    def runtime_of(self, target: Target):
+        """That target's mechanism: IncusRuntime (incus-oci) or OciDocker (lxd-docker), its client as the platform's
+        rights run it, the service runner and the streamer."""
+        seen = self._svc_seen.get(target.id)
+        if target.state != "ready" or seen is None:
+            raise Refusal(f"{target.id} hosts no service now: {target.why or 'read it again'}")
+        kw = dict(pool=seen["pool"], arch=seen["arch"], version=seen["version"], lan=seen["lan"], where_data=seen["where"])
+        if seen["mechanism"] == "incus-oci":
+            return svcs.IncusRuntime(seen["client"], self._service_command, self._stream, **kw)
+        return svcs.OciDocker(seen["client"], self._service_command, self._stream, **kw)
+
+    def service_reads_wanted(self) -> bool:
+        """Whether its page reads its services now: once a service plugin asked, a grant was made, a plan or a work is
+        held, or the last read named an instance of Liminal's; otherwise its page asks nothing more than before 0.4.0."""
+        if self._svc.plans.waiting() or self._svc.works.all() or self._svc.askers or self.grants():
+            return True
+        return bool(self._learned.get("liminal"))
+
+    def _oci_missing(self) -> bool:
+        """Whether the last services' read found Docker's way (lxd-docker) needed and liminal-oci not set up."""
+        with self._svc.lock:
+            kept = self._svc.targets
+        return any(t.mechanism == "lxd-docker" and t.state == "not answering" and "not set up" in t.why
+                   for t in (kept[1] if kept else ()))
+
+    def _kept_secret_words(self, t: Target, spec) -> str:
+        names = ", ".join(f"{s.variable} (as {s.env})" for s in spec.secrets())
+        if t.mechanism == "incus-oci":
+            return (f"{names}: handed to the instance in its configuration, on standard input; the {t.id} daemon keeps "
+                    "it in its database, which anyone in incus-admin (or root) can read (incus config show)")
+        return (f"{names}: handed to the container inside {svcs.OCI} by environment alone, crossing into it on "
+                f"standard input; Docker there keeps it in the container's settings, which anyone who may run commands "
+                f"in {svcs.OCI} can read (docker inspect)")
+
+    def _service_command(self, argv, timeout, stdin=None, env=None, binary=False, out=None):
+        if self._service_runner is not None:
+            return self._service_runner(argv, timeout, stdin=stdin, env=env, binary=binary, out=out)
+        if self._shell is not None or self._runner is not None:  # a test's stand-in: never run for real
+            raise Refusal("this stand-in shell takes no service command: give a service runner")
+        return svcs.service_run(argv, timeout, stdin=stdin, env=env, binary=binary, out=out)
+
+    def _stream(self, argv, timeout, line, stop=None):
+        if self._streamer is not None:
+            return self._streamer(argv, timeout, line, stop)
+        if self._shell is not None or self._runner is not None:
+            raise Refusal("this stand-in shell streams no command: give a streamer")
+        return svcs.stream(argv, timeout, line, stop)
+
+    @staticmethod
+    def _port_holders(port: int) -> list[str]:
+        """Who listens on `port` of this machine, from its socket table (nothing is sent anywhere): each program in
+        words; [] when none, or when the table cannot be read."""
+        try:
+            from liminal_libs import resources
+            from liminal_libs.machines.modelserver import held_words, holders
+
+            held = holders(int(port), resources.default_probe())
+            return [held_words(int(port), held)] if held else []
+        except Exception:  # noqa: BLE001 - a table that cannot be read: no holder known
+            return []
+
+    def setup_oci(self, accept_download=False, log=None) -> dict:
+        """liminal-oci set up (decision 15 a), from the page alone and asked twice: one system container from the
+        distribution's image, nesting on, boot.autostart=false, and Docker from Docker's own repository inside it. As a
+        job, each line to `log`; its Cancel, the plugin turned off or the platform's stop end it, and what was made is
+        left as it is (said: Delete… removes it). Only where Incus' own OCI instances cannot run."""
+        ctx = self._ready()
+        if ctx.backend not in ("incus", "lxd"):
+            raise Refusal(LXC_WORDS)
+        if ctx.daemon == "stopped" or (ctx.daemon == "idle" and not self._woken):
+            raise Refusal(f"the {ctx.title} daemon is {ctx.daemon}: start it or read it first (nothing here does)")
+        got = self._read_services(ctx)
+        if got.get("problem"):
+            raise LxdError(got["problem"])
+        if ctx.backend == "incus" and "instance_oci" in ((got.get("server") or {}).get("api_extensions") or []) \
+                and {"skopeo", "umoci"} <= set(got.get("tools") or ()):
+            raise Refusal(f"this Incus runs OCI images itself: Liminal's services need no {svcs.OCI} here")
+        if got.get("oci") is not None:
+            raise Refusal(f"{svcs.OCI} is there already ({str(got['oci'].get('status') or '').lower()})")
+        if not got.get("pool"):
+            raise Refusal(f"{ctx.title} has no storage pool in its default profile: incus admin init (lxd init) sets one up")
+        image = svcs.OCI_IMAGE[ctx.backend]
+        if not yes(accept_download):
+            raise Refusal(f"{svcs.OCI} is made from {image} and Docker's packages are downloaded into it from "
+                          f"download.docker.com ({svcs.OCI_SIZES})", accept="accept_download")
+        say = log if log is not None else (lambda _s: None)
+        client = [*ctx.shell.prefix(root=ctx.access.as_root), ctx.client]
+        stopping = self._stopping  # this setup's: a detach sets it, then gives the plugin a new one
+        stop = lambda: stopping.is_set() or bool(getattr(log, "cancelled", False))  # noqa: E731
+        steps = ((f"{svcs.OCI} made from {image}",
+                  [*client, "launch", image, svcs.OCI, *[w for c in svcs.OCI_CONFIG for w in ("-c", c)]]),
+                 (f"Docker installed inside {svcs.OCI} from download.docker.com",
+                  [*client, "exec", svcs.OCI, svcs.EXEC_MODE, "--", "sh", "-c", svcs.DOCKER_INSIDE]))
+        try:
+            for words, argv in steps:
+                if stop():
+                    raise svcs.IncusFailed("asked to stop")
+                code, errors = self._stream(argv, svcs.SETUP_S, say, stop)
+                if code != 0:
+                    raise svcs.IncusFailed((errors or f"{argv[len(client)]} failed ({code})").strip().splitlines()[-1])
+                say(words)
+        except (svcs.IncusFailed, Refusal) as e:
+            said = (f"{svcs.OCI}'s setup stopped: {e}. What was made is left as it is: Delete… beside {svcs.OCI} "
+                    "removes it")
+            say(said)
+            return answer(said, ok=False)
+        finally:
+            self.forget_targets()
+        return answer(f"{svcs.OCI} is set up: Docker runs inside it for Liminal's services (boot.autostart=false)")
 
 
 MACHINE = LxdPlugin()

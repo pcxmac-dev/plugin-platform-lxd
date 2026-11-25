@@ -14,12 +14,15 @@ import pytest
 
 from liminal_libs.machines import linux as linux_mod
 from liminal_libs.machines.linux import Shell
-from liminal_libs.machines.plugin import CommandError
+from liminal_libs.machines.plugin import CommandError, MachinePlugin
 
 from plugin_platform_lxd import MACHINE, LxdError, LxdPlugin, Refusal, inventory, system, why_not_native
 from plugin_platform_lxd.__main__ import main
 
 RECORDED = Path(__file__).parent / "recorded"
+# what 0.4.0's ContainerHost adds to an Incus or LXD page (classic LXC's has none: not offered for services)
+SERVICE_TABLES = ["Liminal's services", "Waiting for your answer", "Service plugins", "Kept data"]
+SERVICE_FORMS = {"approve", "decline", "grant", "revoke", "forget"}
 # the library's root prefix (liminal-libs 1.80.0 machines/linux.py Shell.prefix: `sudo -n --`, so a command beginning
 # with a dash is never read as sudo's option); until then `sudo -n`
 SUDO = ["sudo", "-n", "--"]
@@ -185,8 +188,11 @@ def texts(row: list) -> list:
 def test_the_plugin_its_hooks_and_its_probe():
     assert (MACHINE.name, MACHINE.title, MACHINE.ICON, MACHINE.KIND, MACHINE.STEPS, MACHINE.options) == (
         "lxd", "LXC / LXD", "lxd", "machine", (), ())
-    assert set(LxdPlugin(native="").interface()["hooks"]) == {"present", "status", "run", "power", "snapshot", "restore",
-                                                              "delete", "service", "wake"}
+    from liminal_libs.machines.containerhost import ContainerHost
+
+    own = {"present", "status", "run", "power", "snapshot", "restore", "delete", "service", "wake", "setup_oci"}
+    services = set(ContainerHost.HOOKS) - set(MachinePlugin.HOOKS)  # 0.4.0: a container plugin's
+    assert set(LxdPlugin(native="").interface()["hooks"]) == own | services
     assert "setup" not in MACHINE.interface()["hooks"] and "instances" not in MACHINE.interface()["hooks"]  # nothing to set up
     for word in ("incus", "lxc-ls", "incus.service", "snap.lxd.daemon.service", "incusd", "lxc-net", "/run/openrc/",
                  "/etc/runlevels/", "pgrep -x", "/snap/bin/", "LC_ALL=C"):
@@ -235,9 +241,12 @@ def test_incus_under_systemd_read_as_a_member_of_incus_admin():
     assert [texts(r)[:3] for r in daemons["rows"]] == [["incus.service", "running", "enabled"], ["incus.socket", "running", "enabled"],
                                                        ["incus-startup.service", "on", "enabled"], ["incus-user.socket", "listening", "enabled"]]
     assert all(r[4] == "" for r in daemons["rows"])  # nothing to start
-    assert {f["id"] for f in st["forms"]} == {"power", "snapshot", "restore", "delete", "service", "wake"} and st["actions"] == []
+    assert {f["id"] for f in st["forms"]} == {"power", "snapshot", "restore", "delete", "service", "wake", "setup_oci", *SERVICE_FORMS}
+    assert st["actions"] == []
     accept = {f["id"]: [x["name"] for x in f["fields"] if x["type"] == "accept"] for f in st["forms"]}
-    assert accept == {"power": [], "snapshot": [], "restore": ["accept_restore"], "delete": ["accept_delete"], "service": [], "wake": []}
+    assert {k: v for k, v in accept.items() if k not in SERVICE_FORMS} == {
+        "power": [], "snapshot": [], "restore": ["accept_restore"], "delete": ["accept_delete"], "service": [], "wake": [],
+        "setup_oci": ["accept_download"]}
     assert fake.reads == ["sh -c echo '== instances'; /usr/bin/incus list --format json --all-projects 2>&1; echo \"== rc $?\""]
     assert not any(c[0] == "sudo" for c in fake.calls) and fake.changes == []  # as the user; nothing changed by a read
 
@@ -348,7 +357,7 @@ def test_an_idle_daemon_is_read_only_when_asked_since_connecting_starts_it():
     assert st["daemon"].startswith("idle: incus.socket listens") and st["actions"] == [
         {"form": "wake", "title": "Read now…", "note": "connects to the idle daemon, which starts it"}]
     assert table(st, "Instances")["empty"].startswith("Not read: the Incus daemon is idle (incus.socket listens)")
-    assert [t["title"] for t in st["tables"]] == ["Instances", "Snapshots", "Daemons"]
+    assert [t["title"] for t in st["tables"]] == ["Instances", "Snapshots", "Daemons", *SERVICE_TABLES]
     assert p.wake()["said"] == "Incus read: 4 instances, 2 running" and len(fake.reads) == 1
     st = p.status()
     assert len(fake.reads) == 2 and st["summary"] == "Incus 6.0.4: 4 instances, 2 running" and st["actions"] == []

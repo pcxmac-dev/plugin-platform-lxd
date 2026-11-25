@@ -77,7 +77,18 @@ def test_its_cards_are_sound_and_written_for_plugin_api_2_2():
         assert len(a.areas) > len(a.covered) and len(a.calls) > len(a.used)  # more of the API than the plugin uses
 
 
-def test_the_incus_card_names_every_command_the_plugin_runs():
+def service_shapes(api: str, client: str, tmp_path) -> set[str]:
+    """0.4.0: every command a service's plans, liminal-oci's setup and the services' read run (test_services'
+    flows, as the stand-ins were given them)."""
+    from plugin_platform_lxd import services as svcs
+    from test_services import service_flow
+
+    got = {shape(api, a) for a in service_flow(tmp_path) if (a[3:] if a[:3] == SUDO else a)[0] == client}
+    got |= {shape(api, [client, *m.split()]) for m in re.findall(rf"'?{client}'? ([^;)]*?) 2>&1", svcs.services_script(client))}
+    return got
+
+
+def test_the_incus_card_names_every_command_the_plugin_runs(tmp_path):
     fake = FakeLinux()
     p = plugin(fake)
     p.status()
@@ -92,10 +103,11 @@ def test_the_incus_card_names_every_command_the_plugin_runs():
                                                                             inventory.read_script("/usr/bin/incus"))}
     assert '"$p" --version' in system.PROBE and "incus" in system.TOOLS  # each tool's version, the probe's
     ran.add("--version")
+    ran |= service_shapes(cards.INCUS, "/usr/bin/incus", tmp_path)
     assert ran == claimed(cards.INCUS), ran ^ claimed(cards.INCUS)
 
 
-def test_the_lxd_card_names_every_command_the_plugin_runs():
+def test_the_lxd_card_names_every_command_the_plugin_runs(tmp_path):
     fake = Stopped("lxd", os="ubuntu", units="lxd", groups=("ciara", "lxd"), daemons=("lxd",),
                    sockets=("/var/snap/lxd/common/lxd/unix.socket",))
     p = plugin(fake)
@@ -110,6 +122,7 @@ def test_the_lxd_card_names_every_command_the_plugin_runs():
     ran |= {shape(cards.LXD, ["lxc", *m.split()]) for m in re.findall(r"'?/snap/bin/lxc'? ([^;]*?) 2>&1",
                                                                        inventory.read_script("/snap/bin/lxc"))}
     ran.add("--version")
+    ran |= service_shapes(cards.LXD, "/snap/bin/lxc", tmp_path)
     assert ran == claimed(cards.LXD), ran ^ claimed(cards.LXD)
     assert "snap list lxd" in system.PROBE and any(c.name == "snap list lxd" for c in card(cards.LXD).used)
 

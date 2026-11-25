@@ -23,6 +23,16 @@ _SYSTEMCTL = "https://www.freedesktop.org/software/systemd/man/latest/systemctl.
 _OPENRC = "https://github.com/OpenRC/openrc/blob/master/user-guide.md"
 
 
+# 0.4.0: what a service's plans and the services' read ask of Incus and LXD
+DOCKER_INSIDE_USED = ("Docker inside liminal-oci (exec liminal-oci --mode=non-interactive -- docker …: create, start, stop, "
+                      "rename, rm, cp, exec cat, logs, inspect, volume, network and image inspect, pull, run --rm for a "
+                      "backup; a secret's value on standard input through sh, never on the command line), its setup's "
+                      "install of Docker's packages, a bound volume made writable for the image's user (chown), and "
+                      "the services' read of docker version")
+SERVICES_READ_USED = ("the services' read: the server's API extensions (instance_oci), its version and architecture, the "
+                      "default profile's storage pool, and liminal-oci")
+
+
 def _incus(cmd: str) -> str:
     return _IM + cmd + "/"
 
@@ -71,9 +81,9 @@ INCUS_API = Api(
         Area("Profiles", "sets of configuration and devices instances take (/1.0/profiles)", _incus("profile"),
              covered="listed with their devices and users"),
         Area("Storage", "storage pools, volumes and buckets (/1.0/storage-pools)", _incus("storage"),
-             covered="the pools listed with their driver and source"),
+             covered="the pools listed with their driver and source; a service's custom volumes, their snapshots and files"),
         Area("Networks", "networks, their ACLs, address sets, forwards, load balancers, peers and zones (/1.0/networks …)",
-             _incus("network"), covered="the managed networks listed with their addresses"),
+             _incus("network"), covered="the managed networks listed with their addresses; a service's own bridge made and removed"),
         Area("The server", "the daemon's configuration and its environment (/1.0)", _incus("version"),
              covered="the client's version (incus --version)"),
         Area("Projects", "projects: separate sets of instances, images and profiles (/1.0/projects)", _incus("project")),
@@ -82,7 +92,7 @@ INCUS_API = Api(
         Area("Operations and events", "background operations, the event stream (/1.0/operations, /1.0/events)",
              _incus("operation")),
         Area("Exec, console and files", "a command run in an instance, its console, files pushed and pulled",
-             _incus("exec")),
+             _incus("exec"), covered="Docker inside liminal-oci driven; a service's console log read"),
         Area("Warnings, metrics and resources", "the daemon's warnings, its metrics, the host's resources",
              _incus("warning")),
     ),
@@ -111,14 +121,55 @@ INCUS_API = Api(
              used="Restore… (asked twice)", docs=_IM + "snapshot/restore/", writes=True),
         Call("incus delete NAME", "a stopped instance deleted with its snapshots (DELETE /1.0/instances/{name})", "Instances",
              used="Delete… (asked twice)", docs=_incus("delete"), writes=True),
-        Call("incus launch IMAGE NAME", "an instance made and started", "Instances", docs=_incus("launch"), writes=True),
+        Call("incus launch IMAGE NAME", "an instance made and started", "Instances", docs=_incus("launch"), writes=True,
+             used=("Set up for services…: liminal-oci from images:debian/13, nesting on, boot.autostart=false (where "
+                   "Incus runs no OCI image itself), once you approve it")),
         Call("incus exec NAME -- COMMAND", "a command run in an instance", "Exec, console and files", docs=_incus("exec"),
-             writes=True),
+             writes=True, used=DOCKER_INSIDE_USED),
+        Call("incus init IMAGE NAME < CONFIG", "an instance made, not started, its configuration and devices read from "
+             "standard input (POST /1.0/instances)", "Instances", docs=_incus("init"), writes=True,
+             used=("a service's instance from its OCI image, inside its approved plan's work: environment.* with its "
+                   "secrets, user.liminal.*, limits.memory and boot.autostart=false, its NIC with a pinned address, its "
+                   "custom volumes and a proxy device per port, all on standard input")),
+        Call("incus rename NAME NEW", "an instance renamed (POST /1.0/instances/{name})", "Instances",
+             docs=_incus("rename"), writes=True,
+             used="an update: the current instance kept as …-previous, named back by a rollback or an undo"),
+        Call("incus config device add NAME DEVICE TYPE KEY=VALUE…", "an instance's device added, set, unset or removed",
+             "Instances", docs=_IM + "config/device/", writes=True,
+             used=("…-previous lets its pinned address go, and takes it back when named back (set, unset); "
+                   "liminal-oci's bound volumes and proxy devices (add, remove)")),
+        Call("incus image copy REMOTE:IMAGE@DIGEST local: --alias ALIAS", "an image copied from a remote (POST /1.0/images)",
+             "Images", docs=_IM + "image/copy/", writes=True,
+             used="a service's OCI image fetched by its digest (skopeo checks it), aliased liminal-image-…"),
+        Call("incus remote add NAME URL --protocol=oci", "a remote added to the client's configuration", "Images",
+             docs=_IM + "remote/add/", writes=True,
+             used="an OCI registry's remote (liminal-docker: https://docker.io), once, inside the first plan that needs it"),
+        Call("incus remote list --format json", "the client's remotes", "Images", docs=_IM + "remote/list/",
+             used="whether an OCI registry's remote is there"),
+        Call("incus storage volume create POOL NAME KEY=VALUE…", "a custom volume made, listed or deleted "
+             "(/1.0/storage-pools/{pool}/volumes)", "Storage", docs=_IM + "storage/volume/", writes=True,
+             used=("a service's data: made at its install (user.liminal.*, initial.uid), listed by its labels, deleted "
+                   "only by Delete its data… or Forget… (each asked twice)")),
+        Call("incus storage volume snapshot create POOL VOLUME SNAPSHOT", "a custom volume's snapshot taken, listed, "
+             "restored or deleted", "Storage", docs=_IM + "storage/volume/snapshot/", writes=True,
+             used="an update's backup (liminal-<stamp>, the last two kept), put back by a rollback (asked twice)"),
+        Call("incus storage volume file push - POOL VOLUME/PATH", "a file written into a custom volume, or read (pull)",
+             "Storage", docs=_IM + "storage/volume/file/", writes=True,
+             used="a service's seeds into its new volume, from standard input; a readable file (Jenkins' unlock password)"),
+        Call("incus network create NAME KEY=VALUE…", "a managed network made (POST /1.0/networks)", "Networks",
+             docs=_IM + "network/create/", writes=True,
+             used=("a service's own Liminal bridge (lim-…): the subnet the firewall plugin hands out, NAT, DHCP from .128, "
+                   "no IPv6")),
+        Call("incus network delete NAME", "a managed network deleted (DELETE /1.0/networks/{name})", "Networks",
+             docs=_IM + "network/delete/", writes=True, used="a service's Remove…: its bridge after its instances"),
+        Call("incus console NAME --show-log", "an instance's console log", "Exec, console and files",
+             docs=_incus("console"), used="a service's log (a ring buffer, read once)"),
         Call("incus copy SOURCE TARGET", "an instance copied", "Instances", docs=_incus("copy"), writes=True),
         Call("incus config set NAME KEY=VALUE", "an instance's configuration changed", "Instances", docs=_incus("config"),
              writes=True),
         Call("incus monitor", "the daemon's events", "Operations and events", docs=_incus("monitor")),
-        Call("incus query /1.0", "any REST call, as is", "The server", docs=_incus("query")),
+        Call("incus query /1.0", "any REST call, as is", "The server", docs=_incus("query"),
+             used=SERVICES_READ_USED),
     ),
     verified=VERIFIED)
 
@@ -155,7 +206,8 @@ LXD_API = Api(
              covered="listed; one taken; an instance restored to one (asked twice)"),
         Area("Images", "images and their aliases (/1.0/images)", _lxd("image"), covered="listed"),
         Area("Profiles", "sets of configuration and devices (/1.0/profiles)", _lxd("profile"), covered="listed"),
-        Area("Storage", "storage pools and volumes (/1.0/storage-pools)", _lxd("storage"), covered="the pools listed"),
+        Area("Storage", "storage pools and volumes (/1.0/storage-pools)", _lxd("storage"),
+             covered="the pools listed; a service's custom volumes, bound into liminal-oci"),
         Area("Networks", "networks, ACLs, forwards, load balancers, peers and zones (/1.0/networks …)", _lxd("network"),
              covered="the managed networks listed"),
         Area("The server", "the daemon's configuration and environment (/1.0)", _lxd("version"),
@@ -165,7 +217,8 @@ LXD_API = Api(
         Area("Authentication and groups", "identities, groups and permissions (/1.0/auth)", _lxd("auth")),
         Area("Placement groups and replicators", "where instances go, and their replication (LXD 7)", _lxd("placement-group")),
         Area("Operations and events", "background operations, the event stream", _lxd("operation")),
-        Area("Exec, console and files", "a command run in an instance, its console, its files", _lxd("exec")),
+        Area("Exec, console and files", "a command run in an instance, its console, its files", _lxd("exec"),
+             covered="Docker inside liminal-oci driven"),
         Area("Warnings, metrics and resources", "the daemon's warnings, its metrics, the host's resources", _lxd("warning")),
     ),
     calls=(
@@ -192,12 +245,19 @@ LXD_API = Api(
              used="Restore… (asked twice)", docs=_lxd("restore"), writes=True),
         Call("lxc delete NAME", "a stopped instance deleted with its snapshots", "Instances", used="Delete… (asked twice)",
              docs=_lxd("delete"), writes=True),
-        Call("lxc launch IMAGE NAME", "an instance made and started", "Instances", docs=_lxd("launch"), writes=True),
+        Call("lxc launch IMAGE NAME", "an instance made and started", "Instances", docs=_lxd("launch"), writes=True,
+             used="Set up for services…: liminal-oci from ubuntu:24.04, nesting on, boot.autostart=false, once you approve it"),
+        Call("lxc config device add NAME DEVICE TYPE KEY=VALUE…", "an instance's device added or removed", "Instances",
+             docs=_LM + "config/device/", writes=True, used="liminal-oci's bound volumes and proxy devices (add, remove)"),
+        Call("lxc storage volume create POOL NAME KEY=VALUE…", "a custom volume made, listed or deleted", "Storage",
+             docs=_LM + "storage/volume/", writes=True,
+             used=("a service's data, bound into liminal-oci: made at its install, listed, deleted only by Delete its "
+                   "data… or Forget… (each asked twice)")),
         Call("lxc exec NAME -- COMMAND", "a command run in an instance", "Exec, console and files", docs=_lxd("exec"),
-             writes=True),
+             writes=True, used=DOCKER_INSIDE_USED),
         Call("lxc copy SOURCE TARGET", "an instance copied", "Instances", docs=_lxd("copy"), writes=True),
         Call("lxc monitor", "the daemon's events", "Operations and events", docs=_lxd("monitor")),
-        Call("lxc query /1.0", "any REST call, as is", "The server", docs=_lxd("query")),
+        Call("lxc query /1.0", "any REST call, as is", "The server", docs=_lxd("query"), used=SERVICES_READ_USED),
     ),
     verified=VERIFIED)
 

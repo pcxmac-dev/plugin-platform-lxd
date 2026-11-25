@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.0 (2026-11-25)
+
+LXC / LXD hosts Liminal's services: liminal-libs 1.93.0's one "run a service" interface (`ContainerHost`) on the Incus
+or LXD of the Linux the platform runs on. service-containers-design §4.4 and §4.5, the networking design's §5.6 and
+§5.7, decision 15 (a) and N25 (a). Needs liminal-libs>=1.93.0.
+- **Two mechanisms** (`services.py`). `incus-oci` where the daemon lists `instance_oci` and skopeo and umoci are here:
+  each part an Incus instance from its OCI image, fetched by its digest through the registry's OCI remote
+  (`liminal-docker`, added once inside the first approved plan that needs it), made with `incus init IMAGE NAME` and
+  its whole configuration on standard input (`environment.*` with its secrets, `user.liminal.*`, `limits.memory`,
+  `boot.autostart=false` said outright), custom volumes in the default profile's pool (`initial.uid` for the volume's
+  owner), seeds and readable files through `incus storage volume file`, a proxy device per port (every address, or
+  127.0.0.1 alone while the port is closed to your network), its console log, an update's backup as a snapshot of each
+  custom volume (the last two kept), and the previous instance letting its pinned address go until named back.
+  Otherwise `lxd-docker`: Docker inside one system container, `liminal-oci`, through the library's `DockerRuntime` and
+  `incus exec liminal-oci --mode=non-interactive -- docker` (LXD's `lxc exec`), a secret's value crossing on standard
+  input (`sh -c` reads NAME=value lines, then runs docker), each service volume a custom volume attached to
+  liminal-oci at `/srv/liminal/<volume>` and bound into the container (made writable for the image's user), each
+  published port a proxy device on liminal-oci.
+- **A Liminal bridge per segment** (N25 a): `incus network create lim-<11 hex>` with the subnet the firewall plugin hands
+  out, NAT, DHCP from .128, no IPv6, labelled `user.liminal.*`; each part's address pinned by its NIC. Docker's
+  networks inside liminal-oci are said as nested segments.
+- **Set up for services…** (`setup_oci`, a job with its Cancel): liminal-oci from `images:debian/13` (Incus) or
+  `ubuntu:24.04` (LXD), nesting on, `boot.autostart=false`, Docker from Docker's own repository; asked twice
+  (`accept_download`, its sizes said first); refused where Incus runs OCI images itself, and when liminal-oci is there.
+- **Its target**, one per machine: ready once the daemon runs and its mechanism answers. An idle daemon is "idle" (never
+  woken), a stopped one "stopped", liminal-oci stopped "stopped", missing "not answering" (pointing at Set up for
+  services…), no rights "no rights", classic LXC "not answering" (not offered: no proxy devices or custom volumes); on
+  Windows or macOS "not here", asking nothing. Inside WSL its stack stays the Linux platform's, its ports meeting your
+  network through WSL's NAT. Its page reads the services only once a service plugin asked, a grant, plan or work is
+  held, or an instance of Liminal's is listed: until then it asks nothing more than before.
+- **Its own changes guarded**: Delete… and Restore… of a service's instance are refused, pointing at its owner's page;
+  liminal-oci is neither deleted nor restored while it holds a service, or while that cannot be read. Its own change
+  hooks (power, snapshot, restore, delete, service, wake, setup_oci) are its page's alone (PAGE_ONLY_HOOKS).
+- **The runner**: `services.service_run` refuses an environment (a value goes on standard input, or not at all); a
+  test's plain stand-in shell has every service command refused rather than run for real.
+- Its API cards name every command a service's plans, liminal-oci's setup and the services' read run.
+- Tests: `test_services.py` (FakeIncus beside the library's FakeDocker and stand-in firewall, attached to a real
+  apps.App): the conformance sequence on both mechanisms, the exact configuration on standard input, the canary secret,
+  the guards, idle and stopped daemons, classic LXC, Windows; each of its 26 gates taken out once made a test fail.
+
 ## 0.3.0 (2026-11-16)
 
 It works on any Linux the platform runs on, a WSL distribution included (the user, 2026-11-15: "wsl and firewall linux should always work under linux, if wsl prevents or misses some capability this should reflect in the plugin"). With
